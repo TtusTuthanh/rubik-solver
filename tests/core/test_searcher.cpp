@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -270,6 +272,148 @@ void testHeapFallbackOver32() {
   }
 }
 
+// -- Baseline parity: shared DFS must match hand-rolled DFS order ----------
+// Toy with same-face pruning via SearchState wrapper (as in cfop/roux/zz/
+// heise): moves 0..5 with faces 0,0,1,1,2,2; same-face continuations are
+// dead. Baseline replica implements the original hand-rolled dfs exactly:
+// goal-first, heuristic/bound check, parent-side exclusion of over-bound
+// children (bestExceed recorded at parent), std::sort by (f,h). Shared
+// searcher must return the identical solution and visit the identical
+// number of non-goal nodes. Before the fix (recursing into dead and
+// over-bound children) this toy visited ~227k nodes vs ~38k baseline.
+namespace {
+struct ParityTS {
+  int pos = 0;
+  int prevFace = -1;
+  bool dead = false;
+};
+constexpr int kParityMaxPos = 30;
+constexpr int kParityGoal = 30;
+constexpr int kParityMoves = 6;
+constexpr int kParityFace[kParityMoves] = {0, 0, 1, 1, 2, 2};
+constexpr int kParityDelta[kParityMoves] = {3, 2, 2, 1, 1, 0};
+constexpr int kParityPruneH = 1 << 25;
+
+int parityHeurNode(int pos) {
+  int d = kParityGoal - pos;
+  if (d < 0) d = 0;
+  return d / 4;
+}
+ParityTS parityApply(const ParityTS& s, int move) {
+  const int face = kParityFace[move];
+  if (face == s.prevFace) return ParityTS{s.pos, s.prevFace, true};
+  int p = s.pos + kParityDelta[move];
+  if (p < 0) p = 0;
+  if (p > kParityMaxPos) p = kParityMaxPos;
+  return ParityTS{p, face, false};
+}
+bool parityGoal(const ParityTS& s) {
+  return !s.dead && s.pos == kParityGoal;
+}
+int parityHeur(const ParityTS& s) {
+  if (s.dead) return kParityPruneH;
+  return parityHeurNode(s.pos);
+}
+
+// Hand-rolled replica: mirrors solver dfs(cur, g, prevFace, bound).
+struct BaselineParity {
+  std::vector<int> path;
+  std::vector<int> solution;
+  bool found = false;
+  int bestExceed = 0;
+  std::uint64_t nodes = 0;  // non-goal dfs calls (goal returns pre-increment)
+  bool dfs(int pos, int prevFace, int g, int bound) {
+    if (found) return true;
+    if (pos == kParityGoal) {
+      solution = path;
+      found = true;
+      return true;
+    }
+    ++nodes;
+    const int h = parityHeurNode(pos);
+    const int f = g + h;
+    if (f > bound) {
+      if (f < bestExceed) bestExceed = f;
+      return false;
+    }
+    struct Cand {
+      int h, f, mv, next;
+    };
+    std::array<Cand, 16> cands{};
+    int n = 0;
+    for (int mv = 0; mv < kParityMoves; ++mv) {
+      if (kParityFace[mv] == prevFace) continue;
+      int next = pos + kParityDelta[mv];
+      if (next < 0) next = 0;
+      if (next > kParityMaxPos) next = kParityMaxPos;
+      const int hh = parityHeurNode(next);
+      const int ff = g + 1 + hh;
+      if (ff > bound) {
+        if (ff < bestExceed) bestExceed = ff;
+        continue;
+      }
+      cands[static_cast<std::size_t>(n)] = Cand{hh, ff, mv, next};
+      ++n;
+    }
+    std::sort(cands.begin(), cands.begin() + n,
+              [](const Cand& a, const Cand& b) {
+                if (a.f != b.f) return a.f < b.f;
+                return a.h < b.h;
+              });
+    for (int i = 0; i < n; ++i) {
+      const auto& c = cands[static_cast<std::size_t>(i)];
+      path.push_back(c.mv);
+      if (dfs(c.next, kParityFace[c.mv], g + 1, bound)) return true;
+      path.pop_back();
+    }
+    return false;
+  }
+  bool run(int start, int maxDepth) {
+    if (start == kParityGoal) {
+      solution.clear();
+      found = true;
+      return true;
+    }
+    int bound = parityHeurNode(start);
+    while (true) {
+      if (bound > maxDepth) return false;
+      bestExceed = 2147483647;
+      path.clear();
+      found = false;
+      (void)dfs(start, -1, 0, bound);
+      if (found) return true;
+      if (bestExceed == 2147483647) return false;
+      bound = bestExceed;
+    }
+  }
+};
+}  // namespace
+
+void testBaselineParity() {
+  constexpr int kStart = 0;
+  std::vector<int> allowed;
+  for (int i = 0; i < kParityMoves; ++i) allowed.push_back(i);
+
+  IdaSearcher<ParityTS, decltype(&parityApply), decltype(&parityGoal),
+              decltype(&parityHeur)>
+      shared(&allowed, &parityApply, &parityGoal, &parityHeur);
+  auto rs = shared.run(ParityTS{kStart, -1, false}, 30);
+
+  BaselineParity base;
+  const bool ok = base.run(kStart, 30);
+
+  CHECK(rs.has_value() && ok, "parity: both solve");
+  if (rs.has_value() && ok) {
+    CHECK(*rs == base.solution, "parity: identical solution path");
+    std::cout << "parity nodes shared=" << shared.nodes()
+              << " baseline=" << base.nodes << "\n";
+    CHECK(shared.nodes() == base.nodes,
+          "parity: identical non-goal node count");
+    // Regression guard: pre-fix shared visited ~227k nodes on this toy.
+    CHECK(shared.nodes() < 50000, "parity: no dead/over-bound recursion");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -282,6 +426,7 @@ int main() {
   testThreadEquivalence();
   testStableOrderingWithThreads();
   testHeapFallbackOver32();
+  testBaselineParity();
   if (g_failures == 0) {
     std::cout << "ALL TESTS PASSED\n";
     return 0;

@@ -90,17 +90,25 @@ class IdaSearcher {
   }
 
   // Depth-first branch-and-bound under `bound`. Returns true when a goal
-  // path was found (stored in solution_). Candidates are generated from
-  // `allowed`, then ordered by child heuristic (cheapest first) so good
-  // branches run first. No per-node allocation beyond a small vector.
+  // path was found (stored in solution_). Goal is checked before heuristic
+  // and bound pruning (baseline hand-rolled order), so goal states are
+  // accepted without a heuristic evaluation. Candidates that exceed the
+  // bound (including dead same-face continuations via huge heuristic)
+  // are pruned at the parent and never recursed into; only live
+  // (f <= bound) candidates are ordered and expanded.
   [[nodiscard]] bool dfs(const S& state, int g, int bound) {
+    if (found_) return true;
+    if (goal_(state)) {
+      solution_ = path_;
+      found_ = true;
+      return true;
+    }
     ++nodes_;
     // Poll at the root (so even tiny searches honor an expired deadline or
     // a pre-stopped token) and then every 1024 nodes.
     if (g == 0 || (nodes_ & 0x3FFu) == 0u) {
       if (pollAbort()) return false;
     }
-    if (found_) return true;
 
     const int h = heuristic_(state);
     const int f = g + h;
@@ -108,11 +116,6 @@ class IdaSearcher {
       // Track the smallest exceeding f seen this iteration.
       bestExceed_ = (std::min)(bestExceed_ == 0 ? f : bestExceed_, f);
       return false;
-    }
-    if (goal_(state)) {
-      solution_ = path_;
-      found_ = true;
-      return true;
     }
     if (allowed_ == nullptr) return false;
 
@@ -178,15 +181,27 @@ class IdaSearcher {
       }
       cands = heap.data();
     }
-    // Stable ordering: ties keep the allowed-list (move-list) order, matching
-    // baseline hand-rolled DFS. std::sort is unstable, so equal-h children
-    // could be explored in implementation-defined order, causing
-    // tie-order variance regressions (e.g. roux with n=18 candidates vs zz
-    // n=9). stable_sort preserves input order deterministically.
-    std::stable_sort(cands, cands + n,
+    // Parent-side bound pruning (baseline semantics): candidates with
+    // f = g+1+h > bound are recorded in bestExceed_ here and excluded from
+    // ordering/recursion. Dead continuations (huge heuristic) are covered
+    // by the same f test, so they never expand. Compaction preserves
+    // allowed-list order among live candidates; stable_sort then keeps
+    // that order for ties (baseline std::sort is insertion-stable for
+    // the <=15 live candidates of production stages, so the two agree).
+    std::size_t m = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+      const int ff = g + 1 + cands[i].h;
+      if (ff > bound) {
+        bestExceed_ = (std::min)(bestExceed_ == 0 ? ff : bestExceed_, ff);
+        continue;
+      }
+      if (m != i) cands[m] = cands[i];
+      ++m;
+    }
+    std::stable_sort(cands, cands + m,
                      [](const Cand& a, const Cand& b) { return a.h < b.h; });
 
-    for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t i = 0; i < m; ++i) {
       if (found_ || abortKind_ != kAbortNone) return found_;
       path_.push_back(cands[i].move);
       if (dfs(cands[i].state, g + 1, bound)) return true;
