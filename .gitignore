@@ -1,0 +1,7 @@
+build/
+data/
+*.db
+*.exe
+*.log
+__pycache__/
+/tables/

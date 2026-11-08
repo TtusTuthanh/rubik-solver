@@ -1,0 +1,8 @@
+entrycompare N=1000000 seed=777001 seconds=4.67555 fast_mismatches(in first 1000)=0
+entrycompare corner: equal=1000000 sentinel_match=0 differ=0 maxAbsDiff=0 sentinelData=0 sentinelTables=0
+entrycompare edgePerm vs data edges: sentinelTables=0 maxShortfall=7
+  pdb0 dominates=938041 short=61959
+  pdb1 dominates=939296 short=60704
+  pdb2 dominates=940099 short=59901
+entrycompare phase1: nonzero=895393 zero=104607 max=12 hist=[0:104607 1:53540 2:54747 3:55852 4:54463 5:56285 6:59071 7:68722 8:104563 9:217927 10:165634 11:4588 12:1 ]
+entrycompare: done

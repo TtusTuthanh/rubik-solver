@@ -1,0 +1,6 @@
+[fuzz] cfop warmup ok: 50 moves in 16187.1 ms
+[fuzz] roux warmup ok: 5 moves in 794.4 ms
+[fuzz] zz warmup ok: 3 moves in 966.1 ms
+[fuzz] heise warmup ok: 65 moves in 7204.1 ms
+[fuzz] optimal warmup ok: 5 moves in 4646.8 ms
+[fuzz] acceptance met (>=99% verified per method)

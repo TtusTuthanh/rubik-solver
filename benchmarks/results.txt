@@ -1,0 +1,42 @@
+rubik-solver fuzz benchmark (SPEC section 10)
+seed_base: 20261108 (per-method seed = seed_base + offset; offsets cfop=0 roux=100000 zz=200000 heise=300000 optimal=400000)
+requested_trials_per_method: 200
+scramble: 25 random face moves (18-face pool, no same-face repeat) for human methods; 10 for optimal; per-method mt19937
+options: human timeout_ms=30000 max_depth=30 thread_count=1 | optimal timeout_ms=60000 max_depth=20 thread_count=4
+verify: refsim solved+scramble+solution==solved; timing excludes scramble+verify, excludes warmup; warmup_ms per method below
+note: reduced run (SPEC section 10 acceptance needs 1000 trials/method); scale per-trial avg/median/p95 to 1000 to extrapolate full runtime
+total_wall_sec: 879.5
+
+method | trials | successes | success_rate | failures | timeouts | db_missing | verify_fail | avg_moves | min_moves | max_moves | avg_ms | median_ms | p95_ms | max_ms
+method   | trials | successes |   rate% |     fail |     tout |     dbmiss |     verfail | avg_moves |       min |       max |   avg_ms | median_ms |   p95_ms |   max_ms
+------------------------------------------------------------------------------------------------------------------------------------------------------
+cfop     |    200 |       200 | 100.00% |        0 |        0 |          0 |           0 |     54.50 |        42 |        62 |   168.43 |    100.13 |   535.95 |  2204.40
+roux     |    200 |       198 |  99.00% |        2 |        2 |          0 |           0 |     36.45 |        31 |        44 |  1898.48 |    272.98 | 10502.77 | 24020.11
+zz       |    200 |       200 | 100.00% |        0 |        0 |          0 |           0 |     48.23 |        34 |        58 |   178.03 |     31.35 |  1001.04 |  2620.41
+heise    |    200 |       200 | 100.00% |        0 |        0 |          0 |           0 |     75.19 |        46 |        97 |  1744.06 |    179.45 | 13085.42 | 14767.01
+optimal  |    200 |       200 | 100.00% |        0 |        0 |          0 |           0 |      9.61 |         5 |        10 |     0.82 |      0.74 |     1.64 |     2.82
+
+Per-method detail:
+- cfop: seed=20261108 scramble_depth=25 timeout_ms=30000 max_depth=30 warmup_ms=14021.8
+  status: completed attempted=200 (requested=200) method_wall_sec=47.8
+  counts: successes=200 failures=0 timeouts=0 database_missing=0 unsolvable=0 cancelled=0 other=0 verify_failures=0
+  slowest_success: trial=198 ms=2204.4 moves=59 scramble="U2 B D R2 L2 B' R B' U' R D' B' L B2 U' B U F L' D' B2 F2 U2 R B'"
+- roux: seed=20361108 scramble_depth=25 timeout_ms=30000 max_depth=30 warmup_ms=501.6
+  status: completed attempted=200 (requested=200) method_wall_sec=436.5
+  counts: successes=198 failures=2 timeouts=2 database_missing=0 unsolvable=0 cancelled=0 other=0 verify_failures=0
+  slowest_success: trial=46 ms=24020.1 moves=41 scramble="R2 U' D2 L U2 R2 D L U' D2 F' R2 L2 F R' U L2 F D2 F2 U' L2 R2 F2 L"
+  sample_failures (first 5):
+    trial=111 reason=Timeout ms=30001.5 scramble="F' R U D2 R U2 L' F' R' D' L2 F L2 F R L' B' F2 U' L2 F2 B R2 B' R"
+    trial=198 reason=Timeout ms=30000.1 scramble="B F R2 U2 R' U' L' B2 L U2 F2 U' R' U2 L2 F' D2 F2 L2 D2 U R' D' F' B"
+- zz: seed=20461108 scramble_depth=25 timeout_ms=30000 max_depth=30 warmup_ms=1054.2
+  status: completed attempted=200 (requested=200) method_wall_sec=36.7
+  counts: successes=200 failures=0 timeouts=0 database_missing=0 unsolvable=0 cancelled=0 other=0 verify_failures=0
+  slowest_success: trial=25 ms=2620.4 moves=49 scramble="B2 F R2 U2 D' R U' F' U' L F2 L' D R2 F2 B2 F2 L' D' F' D2 L2 R' F' U'"
+- heise: seed=20561108 scramble_depth=25 timeout_ms=30000 max_depth=30 warmup_ms=5412.6
+  status: completed attempted=200 (requested=200) method_wall_sec=354.3
+  counts: successes=200 failures=0 timeouts=0 database_missing=0 unsolvable=0 cancelled=0 other=0 verify_failures=0
+  slowest_success: trial=53 ms=14767.0 moves=69 scramble="B R L' D' B L R2 F' B2 L2 U D' L R2 B D2 R' B U B' D' L2 U' L2 B'"
+- optimal: seed=20661108 scramble_depth=10 timeout_ms=60000 max_depth=20 warmup_ms=3994.5
+  status: completed attempted=200 (requested=200) method_wall_sec=4.2
+  counts: successes=200 failures=0 timeouts=0 database_missing=0 unsolvable=0 cancelled=0 other=0 verify_failures=0
+  slowest_success: trial=38 ms=2.8 moves=10 scramble="D2 F2 R B2 R L' F' L2 B2 L2"

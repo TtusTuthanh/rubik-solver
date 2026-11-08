@@ -1,0 +1,39 @@
+rubik-solver fuzz benchmark (SPEC section 10)
+seed_base: 20261108 (per-method seed = seed_base + offset; offsets cfop=0 roux=100000 zz=200000 heise=300000 optimal=400000)
+requested_trials_per_method: 50
+scramble: 25 random face moves (18-face pool, no same-face repeat) for human methods; 10 for optimal; per-method mt19937
+options: human timeout_ms=30000 max_depth=30 thread_count=1 | optimal timeout_ms=60000 max_depth=20 thread_count=4
+verify: refsim solved+scramble+solution==solved; timing excludes scramble+verify, excludes warmup; warmup_ms per method below
+note: reduced run (SPEC section 10 acceptance needs 1000 trials/method); scale per-trial avg/median/p95 to 1000 to extrapolate full runtime
+total_wall_sec: 291.2
+
+method | trials | successes | success_rate | failures | timeouts | db_missing | verify_fail | avg_moves | min_moves | max_moves | avg_ms | median_ms | p95_ms | max_ms
+method   | trials | successes |   rate% |     fail |     tout |     dbmiss |     verfail | avg_moves |       min |       max |   avg_ms | median_ms |   p95_ms |   max_ms
+------------------------------------------------------------------------------------------------------------------------------------------------------
+cfop     |     50 |        50 | 100.00% |        0 |        0 |          0 |           0 |     54.56 |        45 |        62 |   158.26 |    101.73 |   507.26 |   668.87
+roux     |     50 |        50 | 100.00% |        0 |        0 |          0 |           0 |     36.74 |        31 |        44 |  2507.15 |    221.64 | 21458.61 | 25586.09
+zz       |     50 |        50 | 100.00% |        0 |        0 |          0 |           0 |     48.66 |        35 |        55 |   208.61 |     50.53 |  1149.05 |  2762.99
+heise    |     50 |        50 | 100.00% |        0 |        0 |          0 |           0 |     75.28 |        48 |        95 |  2373.80 |    183.34 | 15922.14 | 16032.96
+optimal  |     50 |        50 | 100.00% |        0 |        0 |          0 |           0 |      9.68 |         7 |        10 |     1.26 |      1.05 |     3.27 |     5.06
+
+Per-method detail:
+- cfop: seed=20261108 scramble_depth=25 timeout_ms=30000 max_depth=30 warmup_ms=15779.3
+  status: completed attempted=50 (requested=50) method_wall_sec=23.7
+  counts: successes=50 failures=0 timeouts=0 database_missing=0 unsolvable=0 cancelled=0 other=0 verify_failures=0
+  slowest_success: trial=34 ms=668.9 moves=61 scramble="R' D' F U' R F2 R F2 R F2 D2 R' B F' D F2 B2 D R U F' B' F U D2"
+- roux: seed=20361108 scramble_depth=25 timeout_ms=30000 max_depth=30 warmup_ms=609.1
+  status: completed attempted=50 (requested=50) method_wall_sec=126.0
+  counts: successes=50 failures=0 timeouts=0 database_missing=0 unsolvable=0 cancelled=0 other=0 verify_failures=0
+  slowest_success: trial=28 ms=25586.1 moves=41 scramble="D2 R D2 R' L R' D R' L F D2 B' R' F2 U B' D' F2 L2 R' F R2 F2 R' L'"
+- zz: seed=20461108 scramble_depth=25 timeout_ms=30000 max_depth=30 warmup_ms=998.5
+  status: completed attempted=50 (requested=50) method_wall_sec=11.5
+  counts: successes=50 failures=0 timeouts=0 database_missing=0 unsolvable=0 cancelled=0 other=0 verify_failures=0
+  slowest_success: trial=25 ms=2763.0 moves=49 scramble="B2 F R2 U2 D' R U' F' U' L F2 L' D R2 F2 B2 F2 L' D' F' D2 L2 R' F' U'"
+- heise: seed=20561108 scramble_depth=25 timeout_ms=30000 max_depth=30 warmup_ms=6547.4
+  status: completed attempted=50 (requested=50) method_wall_sec=125.3
+  counts: successes=50 failures=0 timeouts=0 database_missing=0 unsolvable=0 cancelled=0 other=0 verify_failures=0
+  slowest_success: trial=19 ms=16033.0 moves=70 scramble="R2 U D' L2 D L2 U' R' D2 R L' B D2 R D' F' U F U' D B' D L U2 R2"
+- optimal: seed=20661108 scramble_depth=10 timeout_ms=60000 max_depth=20 warmup_ms=4730.9
+  status: completed attempted=50 (requested=50) method_wall_sec=4.8
+  counts: successes=50 failures=0 timeouts=0 database_missing=0 unsolvable=0 cancelled=0 other=0 verify_failures=0
+  slowest_success: trial=26 ms=5.1 moves=10 scramble="U' B' D2 R' L U F2 R U2 R'"

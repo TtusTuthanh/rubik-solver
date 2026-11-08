@@ -1,0 +1,13 @@
+rubik-solver tables benchmark (optimal, SAME scrambles)
+seed=888002 count=500 depth=uniform 1..11
+data_dir=H:/rubik-solver/data
+tables_dir_with=H:/rubik-solver/tables
+options: timeout_ms=60000 max_depth=20 thread_count=4
+verify: refsim solved+scramble+solution==solved
+warmup: 1 solve per config (excluded)
+
+config | successes | avg_ms | median_ms | p95_ms | max_ms
+WITH tables    | 500 | 0.941678 | 0.36485 | 3.4017 | 26.6874
+WITHOUT tables | 500 | 0.813324 | 0.3487 | 2.6306 | 33.4584
+median speedup (WITHOUT/WITH): 0.955735x
+parity: both_ok=500 len_mismatch=0 verify_fail=0 over_scramble_depth=0

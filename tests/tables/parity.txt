@@ -1,0 +1,21 @@
+parity scrambles written to H:/rubik-solver/tests/tables/parity_scrambles.txt
+tables\: HTM set valid in H:/rubik-solver/tables
+heuristic source: tables\ HTM set in H:/rubik-solver/tables + data\ PDBs (max)
+parity WITH progress 100/500
+parity WITH progress 200/500
+parity WITH progress 300/500
+parity WITH progress 400/500
+parity WITH progress 500/500
+tables\: missing cornerHeuristicHTM in H:/rubik-solver/tests/tables/missing_dir_xxx; falling back to data\ DBs (optimal PDBs)
+heuristic source: data\ PDBs (tables\ fallback)
+parity WITHOUT progress 100/500
+parity WITHOUT progress 200/500
+parity WITHOUT progress 300/500
+parity WITHOUT progress 400/500
+parity WITHOUT progress 500/500
+parity both_ok=500 len_mismatch=0 verify_fail=0 overDepth=0
+bench WITH: n=500 avg=0.941678 median=0.36485 p95=3.4017 max=26.6874
+bench WITHOUT: n=500 avg=0.813324 median=0.3487 p95=2.6306 max=33.4584
+bench median speedup=0.955735x
+bench written to H:/rubik-solver/tests/tables/bench.txt
+parity: PASS

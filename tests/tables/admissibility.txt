@@ -1,0 +1,33 @@
+admissibility adapter: is_valid=1 msg="tables\: HTM set valid in H:/rubik-solver/tables"
+admissibility views: corner=1 edgePerm=1 phase1=1 sym=1
+admissibility BFS depth 1: frontier=18 total_visited=19 violations(c/e/p)=0/0/0
+admissibility BFS depth 2: frontier=243 total_visited=262 violations(c/e/p)=0/0/0
+admissibility BFS depth 3: frontier=3240 total_visited=3502 violations(c/e/p)=0/0/0
+admissibility BFS depth 4: frontier=43239 total_visited=46741 violations(c/e/p)=0/0/0
+admissibility BFS depth 5: frontier=574908 total_visited=621649 violations(c/e/p)=0/0/0
+admissibility BFS depth 6: frontier=7618438 total_visited=8240087 violations(c/e/p)=0/0/0
+admissibility full-BFS: visited=8240087 examined=8240087 violCorner=0 violEdge=0 violPhase1=0 corner_patterns=1405068 exactCornerFail=0 edge_patterns=7118162 exactEdgeFail=0 sentinel(c/e/p)=0/0/0
+admissibility BFS seconds=43.9774
+admissibility depth-1 (core apply + refsim):
+  move=U fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/0
+  move=U' fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/0
+  move=U2 fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/0
+  move=R fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/1
+  move=R' fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/1
+  move=R2 fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/0
+  move=F fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/1
+  move=F' fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/1
+  move=F2 fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/0
+  move=D fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/0
+  move=D' fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/0
+  move=D2 fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/0
+  move=L fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/1
+  move=L' fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/1
+  move=L2 fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/0
+  move=B fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/1
+  move=B' fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/1
+  move=B2 fast_ok=1 refsim_ok=1 bfs_depth=1 h(c/e/p)=1/1/0
+admissibility depth-1: violations=0 refsim/fast mismatches=0
+admissibility random-1000 (seed=20261108):
+admissibility random-1000: violations=0 refsim/fast mismatches=0 bfs-misses=0
+admissibility: PASS
