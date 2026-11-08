@@ -9,10 +9,13 @@
 #include <mutex>
 #include <optional>
 #include <stop_token>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "core/moves.hpp"
+#include "core/pdb.hpp"
+#include "core/searcher.hpp"
 
 namespace rubik::zz {
 
@@ -515,59 +518,64 @@ std::vector<std::uint32_t> buildEdgeMoveTable(
   return table;
 }
 
+// Allocation-free neighbor views for core::bfsDb: a view into a move-table
+// row, or a small stack array for combined corner/edge successors.
+struct RowView {
+  const std::uint32_t* row = nullptr;
+  std::size_t size = 0;
+  struct Iter {
+    const std::uint32_t* p = nullptr;
+    const std::uint32_t* end = nullptr;
+    std::uint32_t operator*() const { return *p; }
+    Iter& operator++() { ++p; return *this; }
+    bool operator!=(const Iter& o) const { return p != o.p; }
+  };
+  Iter begin() const { return {row, row == nullptr ? nullptr : row + size}; }
+  Iter end() const { return {row == nullptr ? nullptr : row + size, row == nullptr ? nullptr : row + size}; }
+};
+
+struct ArrayView {
+  std::array<std::uint32_t, 18> data{};
+  std::size_t size = 0;
+  RowView view() const { return {data.data(), size}; }
+  auto begin() const { return view().begin(); }
+  auto end() const { return view().end(); }
+};
+
 std::vector<std::uint8_t> buildCombinedDb(
     const std::vector<std::uint32_t>& cornerTable,
     const std::vector<std::uint32_t>& edgeTable, std::uint32_t cornerEntries,
     std::uint32_t edgeEntries, std::uint32_t startIdx, std::size_t moveCount) {
   const std::uint32_t total = cornerEntries * edgeEntries;
-  std::vector<std::uint8_t> dist(total, 255u);
-  std::vector<std::uint32_t> queue;
-  queue.reserve(total);
-  dist[startIdx] = 0u;
-  queue.push_back(startIdx);
-  std::size_t head = 0;
-  while (head < queue.size()) {
-    const std::uint32_t idx = queue[head++];
-    const std::uint8_t d = dist[idx];
-    const std::uint32_t cIdx = idx / edgeEntries;
-    const std::uint32_t eIdx = idx % edgeEntries;
-    for (std::size_t mi = 0; mi < moveCount; ++mi) {
-      const std::uint32_t nc =
-          cornerTable[static_cast<std::size_t>(cIdx) * moveCount + mi];
-      const std::uint32_t ne =
-          edgeTable[static_cast<std::size_t>(eIdx) * moveCount + mi];
-      const std::uint32_t nidx = nc * edgeEntries + ne;
-      if (dist[nidx] == 255u) {
-        dist[nidx] = static_cast<std::uint8_t>(d + 1u);
-        queue.push_back(nidx);
-      }
-    }
-  }
-  return dist;
+  return core::bfsDb(total, startIdx,
+                     [&](std::uint32_t idx) {
+                       ArrayView next;
+                       next.size = moveCount;
+                       const std::uint32_t cIdx = idx / edgeEntries;
+                       const std::uint32_t eIdx = idx % edgeEntries;
+                       for (std::size_t mi = 0; mi < moveCount; ++mi) {
+                         const std::uint32_t nc =
+                             cornerTable[static_cast<std::size_t>(cIdx) *
+                                         moveCount + mi];
+                         const std::uint32_t ne =
+                             edgeTable[static_cast<std::size_t>(eIdx) *
+                                       moveCount + mi];
+                         next.data[mi] = nc * edgeEntries + ne;
+                       }
+                       return next;
+                     });
 }
 
 std::vector<std::uint8_t> buildSingleDb(
     const std::vector<std::uint32_t>& table, std::uint32_t entries,
     std::uint32_t startIdx, std::size_t moveCount) {
-  std::vector<std::uint8_t> dist(entries, 255u);
-  std::vector<std::uint32_t> queue;
-  queue.reserve(entries);
-  dist[startIdx] = 0u;
-  queue.push_back(startIdx);
-  std::size_t head = 0;
-  while (head < queue.size()) {
-    const std::uint32_t idx = queue[head++];
-    const std::uint8_t d = dist[idx];
-    for (std::size_t mi = 0; mi < moveCount; ++mi) {
-      const std::uint32_t nidx =
-          table[static_cast<std::size_t>(idx) * moveCount + mi];
-      if (dist[nidx] == 255u) {
-        dist[nidx] = static_cast<std::uint8_t>(d + 1u);
-        queue.push_back(nidx);
-      }
-    }
-  }
-  return dist;
+  return core::bfsDb(entries, startIdx,
+                     [&](std::uint32_t idx) {
+                       const std::uint32_t* row =
+                           table.data() +
+                           static_cast<std::size_t>(idx) * moveCount;
+                       return RowView{row, moveCount};
+                     });
 }
 
 std::vector<std::uint8_t> buildEolineDb(const MoveData& md) {
@@ -756,11 +764,6 @@ const Pdbs& getPdbs() {
   return *gPdbs;
 }
 
-inline int pdbLookup(const std::vector<std::uint8_t>& db, std::uint32_t idx) {
-  const std::uint8_t v = db[idx];
-  return (v == 255u) ? 0 : static_cast<int>(v);
-}
-
 // ---------------------------------------------------------------------------
 // Validity (face moves keep centres fixed, so inputs must have them fixed).
 // ---------------------------------------------------------------------------
@@ -806,178 +809,107 @@ bool isValidCubieState(const CubeState& s) {
 }
 
 // ---------------------------------------------------------------------------
-// IDA* searcher. Heuristic = max of subproblem PDBs (admissible).
+// IDA* via the shared core::IdaSearcher. Heuristic = max of subproblem PDBs
+// (admissible). Per-stage move sets, goals and PDB wiring stay here; only
+// the DFS / ordering / bound-raise / deadline handling is shared.
 // ---------------------------------------------------------------------------
 enum class StageKind { Eoline, Left, Right, Coll, Eppl };
 
-struct Searcher {
-  StageKind kind = StageKind::Eoline;
-  const std::vector<int>* allowed = nullptr;
-  const Pdbs* pdbs = nullptr;
-  const MoveData* mv = nullptr;
-  int bestExceed = 0;
-  std::vector<int> path;
-  std::vector<int> solution;
-  bool found = false;
-  int abortKind = 0;  // 0 none, 1 timeout, 2 cancelled
-  std::uint64_t nodes = 0;
-  bool hasDeadline = false;
-  std::chrono::steady_clock::time_point deadline{};
-  std::stop_token externalToken{};
-
-  int heuristic(const CubeState& s) const {
-    int h = 0;
-    if (kind == StageKind::Eoline) {
-      h = (std::max)(h, pdbLookup(pdbs->eoline, eolineIdx(s)));
-    } else if (kind == StageKind::Left) {
-      h = (std::max)(h, pdbLookup(pdbs->eoline, eolineIdx(s)));
-      h = (std::max)(h, pdbLookup(pdbs->left,
-                                  leftCornerIdx(s) * kEdge3Entries + leftEdgeIdx(s)));
-    } else if (kind == StageKind::Right) {
-      h = (std::max)(h, pdbLookup(pdbs->eoline, eolineIdx(s)));
-      h = (std::max)(h, pdbLookup(pdbs->left,
-                                  leftCornerIdx(s) * kEdge3Entries + leftEdgeIdx(s)));
-      h = (std::max)(h, pdbLookup(pdbs->right,
-                                  rightCornerIdx(s) * kEdge3Entries + rightEdgeIdx(s)));
-    } else if (kind == StageKind::Coll) {
-      h = (std::max)(h, pdbLookup(pdbs->eoline, eolineIdx(s)));
-      h = (std::max)(h, pdbLookup(pdbs->left,
-                                  leftCornerIdx(s) * kEdge3Entries + leftEdgeIdx(s)));
-      h = (std::max)(h, pdbLookup(pdbs->right,
-                                  rightCornerIdx(s) * kEdge3Entries + rightEdgeIdx(s)));
-      h = (std::max)(h, pdbLookup(pdbs->coll, collIdx(s)));
-    } else {
-      h = (std::max)(h, pdbLookup(pdbs->eoline, eolineIdx(s)));
-      h = (std::max)(h, pdbLookup(pdbs->left,
-                                  leftCornerIdx(s) * kEdge3Entries + leftEdgeIdx(s)));
-      h = (std::max)(h, pdbLookup(pdbs->right,
-                                  rightCornerIdx(s) * kEdge3Entries + rightEdgeIdx(s)));
-      h = (std::max)(h, pdbLookup(pdbs->coll, collIdx(s)));
-      h = (std::max)(h, pdbLookup(pdbs->uedge, uEdgeIdx(s)));
-      h = (std::max)(h, pdbLookup(pdbs->perm, permIdx(s)));
-    }
-    return h;
+int heuristicFor(StageKind kind, const Pdbs& pdbs, const CubeState& s) {
+  int h = 0;
+  if (kind == StageKind::Eoline) {
+    h = (std::max)(h, core::pdbLookup(pdbs.eoline, eolineIdx(s)));
+  } else if (kind == StageKind::Left) {
+    h = (std::max)(h, core::pdbLookup(pdbs.eoline, eolineIdx(s)));
+    h = (std::max)(h, core::pdbLookup(pdbs.left,
+                                      leftCornerIdx(s) * kEdge3Entries + leftEdgeIdx(s)));
+  } else if (kind == StageKind::Right) {
+    h = (std::max)(h, core::pdbLookup(pdbs.eoline, eolineIdx(s)));
+    h = (std::max)(h, core::pdbLookup(pdbs.left,
+                                      leftCornerIdx(s) * kEdge3Entries + leftEdgeIdx(s)));
+    h = (std::max)(h, core::pdbLookup(pdbs.right,
+                                      rightCornerIdx(s) * kEdge3Entries + rightEdgeIdx(s)));
+  } else if (kind == StageKind::Coll) {
+    h = (std::max)(h, core::pdbLookup(pdbs.eoline, eolineIdx(s)));
+    h = (std::max)(h, core::pdbLookup(pdbs.left,
+                                      leftCornerIdx(s) * kEdge3Entries + leftEdgeIdx(s)));
+    h = (std::max)(h, core::pdbLookup(pdbs.right,
+                                      rightCornerIdx(s) * kEdge3Entries + rightEdgeIdx(s)));
+    h = (std::max)(h, core::pdbLookup(pdbs.coll, collIdx(s)));
+  } else {
+    h = (std::max)(h, core::pdbLookup(pdbs.eoline, eolineIdx(s)));
+    h = (std::max)(h, core::pdbLookup(pdbs.left,
+                                      leftCornerIdx(s) * kEdge3Entries + leftEdgeIdx(s)));
+    h = (std::max)(h, core::pdbLookup(pdbs.right,
+                                      rightCornerIdx(s) * kEdge3Entries + rightEdgeIdx(s)));
+    h = (std::max)(h, core::pdbLookup(pdbs.coll, collIdx(s)));
+    h = (std::max)(h, core::pdbLookup(pdbs.uedge, uEdgeIdx(s)));
+    h = (std::max)(h, core::pdbLookup(pdbs.perm, permIdx(s)));
   }
+  return h;
+}
 
-  bool goal(const CubeState& s) const {
-    if (kind == StageKind::Eoline) return is_eoline_solved(s);
-    if (kind == StageKind::Left) return is_zzf2l_left_solved(s);
-    if (kind == StageKind::Right) return is_zzf2l_right_solved(s);
-    if (kind == StageKind::Coll) return is_coll_solved(s);
-    return is_eppl_solved(s);
-  }
+bool stageGoal(StageKind kind, const CubeState& s) {
+  if (kind == StageKind::Eoline) return is_eoline_solved(s);
+  if (kind == StageKind::Left) return is_zzf2l_left_solved(s);
+  if (kind == StageKind::Right) return is_zzf2l_right_solved(s);
+  if (kind == StageKind::Coll) return is_coll_solved(s);
+  return is_eppl_solved(s);
+}
 
-  bool dfs(const CubeState& cur, int g, int prevGroup, int bound) {
-    if (abortKind != 0) return true;
-    if (goal(cur)) {
-      solution = path;
-      found = true;
-      return true;
-    }
-    if (((++nodes) & 1023u) == 0u) {
-      if (externalToken.stop_requested()) {
-        abortKind = 2;
-        return true;
-      }
-      if (hasDeadline && std::chrono::steady_clock::now() >= deadline) {
-        abortKind = 1;
-        return true;
-      }
-    }
-    const int h = heuristic(cur);
-    const int f = g + h;
-    if (f > bound) {
-      if (f < bestExceed) bestExceed = f;
-      return false;
-    }
-    struct Cand {
-      int h = 0;
-      int f = 0;
-      int mvIdx = -1;
-      CubeState next;
-    };
-    std::array<Cand, 18> cands;
-    int n = 0;
-    for (int mvIdx : *allowed) {
-      const int group = mv->faceGroup[static_cast<std::size_t>(mvIdx)];
-      if (group == prevGroup) continue;
-      const CubeState next = fastApply(cur, mvIdx, *mv);
-      const int hh = heuristic(next);
-      const int ff = g + 1 + hh;
-      if (ff > bound) {
-        if (ff < bestExceed) bestExceed = ff;
-        continue;
-      }
-      Cand& c = cands[static_cast<std::size_t>(n)];
-      c.h = hh;
-      c.f = ff;
-      c.mvIdx = mvIdx;
-      c.next = next;
-      ++n;
-    }
-    std::sort(cands.begin(), cands.begin() + n,
-              [](const Cand& a, const Cand& b) {
-                if (a.f != b.f) return a.f < b.f;
-                return a.h < b.h;
-              });
-    for (int i = 0; i < n; ++i) {
-      const int mvIdx = cands[static_cast<std::size_t>(i)].mvIdx;
-      path.push_back(mvIdx);
-      if (dfs(cands[static_cast<std::size_t>(i)].next, g + 1,
-              mv->faceGroup[static_cast<std::size_t>(mvIdx)], bound)) {
-        return true;
-      }
-      path.pop_back();
-      if (abortKind != 0) return true;
-    }
-    return false;
-  }
+// Search state wraps the cube with the previously used face so the shared
+// searcher keeps the original same-face pruning (core::IdaSearcher has no
+// pruning hook). A same-face continuation is marked dead and given a huge
+// heuristic, so its f always exceeds the bound and the branch is pruned.
+// This is optimality-neutral: any path with two consecutive same-face moves
+// merges into a single move, so an optimal path never needs them.
+struct SearchState {
+  CubeState cube;
+  int prevFace = -1;
+  bool dead = false;
 };
 
-std::expected<std::vector<int>, SolveError> runIda(
+inline constexpr int kPruneHeuristic = 1 << 25;
+
+std::expected<std::vector<int>, SolveError> runStage(
     const CubeState& start, StageKind kind, const std::vector<int>& allowed,
     int stageLimit, bool hasDeadline,
     std::chrono::steady_clock::time_point deadline,
     std::stop_token externalToken) {
   const MoveData& md = getMoveData();
   const Pdbs& pdbs = getPdbs();
-  Searcher searcher;
-  searcher.kind = kind;
-  searcher.allowed = &allowed;
-  searcher.pdbs = &pdbs;
-  searcher.mv = &md;
-  searcher.hasDeadline = hasDeadline;
-  searcher.deadline = deadline;
-  searcher.externalToken = externalToken;
-  if (searcher.goal(start)) return std::vector<int>{};
-  int bound = searcher.heuristic(start);
-  while (true) {
-    if (bound > stageLimit) return std::unexpected(SolveError::Timeout);
-    if (externalToken.stop_requested()) {
-      return std::unexpected(SolveError::Cancelled);
-    }
-    if (hasDeadline && std::chrono::steady_clock::now() >= deadline) {
-      return std::unexpected(SolveError::Timeout);
-    }
-    searcher.bestExceed = 2147483647;
-    searcher.path.clear();
-    searcher.found = false;
-    searcher.abortKind = 0;
-    (void)searcher.dfs(start, 0, -1, bound);
-    if (searcher.found) return searcher.solution;
-    if (searcher.abortKind == 2) return std::unexpected(SolveError::Cancelled);
-    if (searcher.abortKind == 1) return std::unexpected(SolveError::Timeout);
-    if (externalToken.stop_requested()) {
-      return std::unexpected(SolveError::Cancelled);
-    }
-    if (hasDeadline && std::chrono::steady_clock::now() >= deadline) {
-      return std::unexpected(SolveError::Timeout);
-    }
-    if (searcher.bestExceed == 2147483647) {
-      return std::unexpected(SolveError::Unsolvable);
-    }
-    bound = searcher.bestExceed;
+  // Mirror the old loop entry: heuristic above the per-stage bound fails
+  // with Timeout before any search.
+  if (heuristicFor(kind, pdbs, start) > stageLimit) {
+    return std::unexpected(SolveError::Timeout);
   }
+  auto apply = [&md](const SearchState& s, int move) {
+    const int face = md.faceGroup[static_cast<std::size_t>(move)];
+    if (face == s.prevFace) return SearchState{s.cube, s.prevFace, true};
+    return SearchState{fastApply(s.cube, move, md), face, false};
+  };
+  auto goal = [kind](const SearchState& s) {
+    return !s.dead && stageGoal(kind, s.cube);
+  };
+  auto heur = [&pdbs, kind](const SearchState& s) {
+    if (s.dead) return kPruneHeuristic;
+    return heuristicFor(kind, pdbs, s.cube);
+  };
+  core::IdaSearcher<SearchState, decltype(apply), decltype(goal), decltype(heur)>
+      searcher(&allowed, apply, goal, heur);
+  if (hasDeadline) searcher.setDeadline(deadline);
+  searcher.setStopToken(externalToken);
+  auto res = searcher.run(SearchState{start, -1, false}, stageLimit);
+  if (res) return res;
+  // The shared searcher reports Unsolvable both when the per-stage bound is
+  // exceeded and when the search space is exhausted. ZZ stages are always
+  // reachable from a valid cube, so the exhausted case is unreachable here;
+  // a failed stage is a depth-exceeded stage, which is Timeout per the
+  // solver contract (solver.hpp). Timeout/Cancelled pass through unchanged.
+  if (res.error() == SolveError::Unsolvable) {
+    return std::unexpected(SolveError::Timeout);
+  }
+  return res;
 }
 
 std::vector<std::string> tokensFor(const std::vector<int>& idxs, const MoveData& md) {
@@ -1033,90 +965,47 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
     stageT0 = now;
   };
 
-  // Stage 1: EOLine.
-  {
-    auto r = runIda(cur, StageKind::Eoline, faceIdx, stageLimit, hasDeadline,
-                    deadline, options.stop_token);
+  // Per-stage dispatch in stage_names() order. Move sets are unchanged:
+  // eoline allows all 18 face moves, the rest allow R/L/U only.
+  struct StageCfg {
+    StageKind kind;
+    const std::vector<int>* allowedIdx;
+  };
+  auto stageAssert = [](const CubeState& s, std::string_view nm) {
+    if (nm == "eoline") return is_eoline_solved(s);
+    if (nm == "zzf2l_left") {
+      return is_zzf2l_left_solved(s) && is_eoline_solved(s);
+    }
+    if (nm == "zzf2l_right") {
+      return is_zzf2l_right_solved(s) && is_eoline_solved(s);
+    }
+    if (nm == "coll") return is_coll_solved(s);
+    return is_eppl_solved(s);
+  };
+  auto stageKindFor = [](const std::string& nm) {
+    if (nm == "eoline") return StageKind::Eoline;
+    if (nm == "zzf2l_left") return StageKind::Left;
+    if (nm == "zzf2l_right") return StageKind::Right;
+    if (nm == "coll") return StageKind::Coll;
+    return StageKind::Eppl;
+  };
+  for (const std::string& nm : stage_names()) {
+    const StageCfg cfg{stageKindFor(nm),
+                       (nm == "eoline") ? &faceIdx : &zzIdx};
+    auto r = runStage(cur, cfg.kind, *cfg.allowedIdx, stageLimit, hasDeadline,
+                      deadline, options.stop_token);
     if (!r) return std::unexpected(r.error());
     const std::vector<int> idxs = *r;
     const std::vector<std::string> toks = tokensFor(idxs, md);
     CubeState next = cur;
     for (int mv : idxs) next = fastApply(next, mv, md);
-    if (!movesAllowed(toks, allowed_moves_for_stage("eoline")) ||
-        !is_eoline_solved(next)) {
+    if (!movesAllowed(toks, allowed_moves_for_stage(nm)) ||
+        !stageAssert(next, nm)) {
       return std::unexpected(SolveError::Unsolvable);
     }
     cur = next;
-    sol.stages.push_back(StageSolution{"eoline", toks});
-    logStage("eoline", toks);
-  }
-  // Stage 2: ZZF2L left block (R/L/U only).
-  {
-    auto r = runIda(cur, StageKind::Left, zzIdx, stageLimit, hasDeadline,
-                    deadline, options.stop_token);
-    if (!r) return std::unexpected(r.error());
-    const std::vector<int> idxs = *r;
-    const std::vector<std::string> toks = tokensFor(idxs, md);
-    CubeState next = cur;
-    for (int mv : idxs) next = fastApply(next, mv, md);
-    if (!movesAllowed(toks, allowed_moves_for_stage("zzf2l_left")) ||
-        !is_zzf2l_left_solved(next) || !is_eoline_solved(next)) {
-      return std::unexpected(SolveError::Unsolvable);
-    }
-    cur = next;
-    sol.stages.push_back(StageSolution{"zzf2l_left", toks});
-    logStage("zzf2l_left", toks);
-  }
-  // Stage 3: ZZF2L right block (R/L/U only).
-  {
-    auto r = runIda(cur, StageKind::Right, zzIdx, stageLimit, hasDeadline,
-                    deadline, options.stop_token);
-    if (!r) return std::unexpected(r.error());
-    const std::vector<int> idxs = *r;
-    const std::vector<std::string> toks = tokensFor(idxs, md);
-    CubeState next = cur;
-    for (int mv : idxs) next = fastApply(next, mv, md);
-    if (!movesAllowed(toks, allowed_moves_for_stage("zzf2l_right")) ||
-        !is_zzf2l_right_solved(next) || !is_eoline_solved(next)) {
-      return std::unexpected(SolveError::Unsolvable);
-    }
-    cur = next;
-    sol.stages.push_back(StageSolution{"zzf2l_right", toks});
-    logStage("zzf2l_right", toks);
-  }
-  // Stage 4: COLL (R/L/U only).
-  {
-    auto r = runIda(cur, StageKind::Coll, zzIdx, stageLimit, hasDeadline,
-                    deadline, options.stop_token);
-    if (!r) return std::unexpected(r.error());
-    const std::vector<int> idxs = *r;
-    const std::vector<std::string> toks = tokensFor(idxs, md);
-    CubeState next = cur;
-    for (int mv : idxs) next = fastApply(next, mv, md);
-    if (!movesAllowed(toks, allowed_moves_for_stage("coll")) ||
-        !is_coll_solved(next)) {
-      return std::unexpected(SolveError::Unsolvable);
-    }
-    cur = next;
-    sol.stages.push_back(StageSolution{"coll", toks});
-    logStage("coll", toks);
-  }
-  // Stage 5: EPLL (R/L/U only).
-  {
-    auto r = runIda(cur, StageKind::Eppl, zzIdx, stageLimit, hasDeadline,
-                    deadline, options.stop_token);
-    if (!r) return std::unexpected(r.error());
-    const std::vector<int> idxs = *r;
-    const std::vector<std::string> toks = tokensFor(idxs, md);
-    CubeState next = cur;
-    for (int mv : idxs) next = fastApply(next, mv, md);
-    if (!movesAllowed(toks, allowed_moves_for_stage("eppl")) ||
-        !is_eppl_solved(next)) {
-      return std::unexpected(SolveError::Unsolvable);
-    }
-    cur = next;
-    sol.stages.push_back(StageSolution{"eppl", toks});
-    logStage("eppl", toks);
+    sol.stages.push_back(StageSolution{nm, toks});
+    logStage(nm, toks);
   }
   if (!is_solved(cur)) return std::unexpected(SolveError::Unsolvable);
   return sol;
