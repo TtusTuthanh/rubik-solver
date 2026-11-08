@@ -343,7 +343,7 @@ void slice_q_r(const std::array<std::uint8_t, 12>& pc_edges,
   }
 }
 
-// Directory-resolution state (mirrors optimal::set_data_dir pattern).
+// Directory-resolution state (mirrors the frozen set_data_dir pattern).
 std::mutex g_dir_mutex;
 std::optional<std::filesystem::path> g_override_dir;
 
@@ -654,6 +654,27 @@ bool TableLoader::is_loaded(std::string_view filename) const noexcept {
   return view(filename) != nullptr;
 }
 
+int TableLoader::index_of(std::string_view filename) noexcept {
+  return spec_index(filename);
+}
+
+const std::uint8_t* TableLoader::view_indexed(std::size_t idx) const noexcept {
+  if (idx >= maps_.size()) return nullptr;
+  if (!has_view_[idx] || maps_[idx] == nullptr || !maps_[idx]->valid()) {
+    return nullptr;
+  }
+  return maps_[idx]->data();
+}
+
+bool TableLoader::load_indexed(std::size_t idx, bool verify_hashes) {
+  if (idx >= kTableSpecs.size()) return false;
+  return load(kTableSpecs[idx].filename, verify_hashes);
+}
+
+bool TableLoader::is_loaded_indexed(std::size_t idx) const noexcept {
+  return view_indexed(idx) != nullptr;
+}
+
 int TableLoader::corner_heuristic(std::string_view filename,
                                   std::uint64_t idx) const noexcept {
   const std::uint8_t* base = view(filename);
@@ -734,6 +755,22 @@ std::uint32_t TableLoader::phase2_corner_sym(std::uint32_t corner_perm,
   if (base == nullptr || corner_perm >= 40320u || sym >= 16u) return 0;
   const std::uint64_t off =
       (static_cast<std::uint64_t>(corner_perm) * 16ull + sym) * 4ull;
+  return read_u32(base, off);
+}
+std::uint32_t TableLoader::phase2_ud_sym(std::uint32_t ud_perm,
+                                         std::uint32_t sym) const noexcept {
+  const std::uint8_t* base = phase2_symmetry_base();
+  if (base == nullptr || ud_perm >= 40320u || sym >= 16u) return 0;
+  const std::uint64_t off = Phase2SymmetryLayout::ud_edge_off +
+                            (static_cast<std::uint64_t>(ud_perm) * 16ull + sym) * 4ull;
+  return read_u32(base, off);
+}
+std::uint32_t TableLoader::phase2_e_sym(std::uint32_t slice_perm,
+                                        std::uint32_t sym) const noexcept {
+  const std::uint8_t* base = phase2_symmetry_base();
+  if (base == nullptr || slice_perm >= 24u || sym >= 16u) return 0;
+  const std::uint64_t off = Phase2SymmetryLayout::e_edge_off +
+                            (static_cast<std::uint64_t>(slice_perm) * 16ull + sym) * 4ull;
   return read_u32(base, off);
 }
 
@@ -829,6 +866,38 @@ std::uint8_t TableLoader::piece_cube_edge_move(std::uint32_t piece_cube,
 // -------------------------------------------------------------------------
 // Encoders.
 // -------------------------------------------------------------------------
+void upstream_phase1_coords(const CubeState& state, Phase1Coords& out) noexcept {
+  std::array<std::uint8_t, 8> pc_corners{};
+  std::array<std::uint8_t, 12> pc_edges{};
+  to_piece_cube(state, pc_corners, pc_edges);
+  std::uint32_t twist = 0;
+  for (int i = 0; i < 8; ++i) {
+    twist += kCornerOrientWeights[pc_corners[static_cast<std::size_t>(i)]];
+  }
+  std::uint32_t flip = 0;
+  for (int i = 0; i < 12; ++i) {
+    flip |= kEdgeOrientValues[pc_edges[static_cast<std::size_t>(i)]];
+  }
+  std::array<int, 4> q{};
+  std::array<int, 4> r{};
+  slice_q_r(pc_edges, q, r);
+  std::uint32_t comb = 0;
+  for (int i = 0; i < 4; ++i) {
+    comb += binom_small(q[static_cast<std::size_t>(i)],
+                        r[static_cast<std::size_t>(i)] + 1);
+  }
+  std::array<std::uint8_t, 4> ru{};
+  for (int i = 0; i < 4; ++i) {
+    ru[static_cast<std::size_t>(i)] =
+        static_cast<std::uint8_t>(r[static_cast<std::size_t>(i)]);
+  }
+  out.twist = twist;
+  out.flip = flip & 0x7ffu;
+  out.comb495 = comb;
+  out.perm24 = perm_rank_4(ru);
+  out.middle = comb * 24u + out.perm24;
+}
+
 std::uint32_t upstream_twist(const CubeState& state) {
   std::array<std::uint8_t, 8> pc_corners{};
   std::array<std::uint8_t, 12> pc_edges{};
@@ -933,6 +1002,54 @@ std::uint32_t upstream_perm24(const CubeState& state) {
 
 std::uint32_t upstream_middle_layer(const CubeState& state) {
   return upstream_comb495(state) * 24u + upstream_perm24(state);
+}
+
+void upstream_phase2_coords(const CubeState& state, Phase2Coords& out) noexcept {
+  std::array<std::uint8_t, 8> pc_corners{};
+  std::array<std::uint8_t, 12> pc_edges{};
+  to_piece_cube(state, pc_corners, pc_edges);
+  std::array<std::uint8_t, 8> perm{};
+  for (int i = 0; i < 8; ++i) {
+    perm[static_cast<std::size_t>(i)] =
+        pc_corners[static_cast<std::size_t>(i)] >> 2;
+  }
+  out.corner_perm = perm_rank_8(perm);
+  constexpr std::array<int, 8> ud_cubies = {0, 1, 2, 3, 8, 9, 10, 11};
+  std::array<std::uint8_t, 8> seq{};
+  for (int i = 0; i < 8; ++i) {
+    const int pos =
+        pc_edges[static_cast<std::size_t>(ud_cubies[static_cast<std::size_t>(i)])] >> 1;
+    // Upstream returns -1 when a UD cubie sits in the slice (not in G1).
+    // This loader returns 0 there (admissible-safe; phase-2 use is G1-only).
+    if (pos >= 4 && pos <= 7) {
+      out.ud_perm = 0;
+      break;
+    }
+    seq[static_cast<std::size_t>(i)] =
+        static_cast<std::uint8_t>(pos < 4 ? pos : pos - 4);
+    if (i == 7) out.ud_perm = perm_rank_8(seq);
+  }
+  std::array<std::uint8_t, 4> seq4{};
+  bool in_slice = true;
+  for (int i = 0; i < 4; ++i) {
+    const int pos = pc_edges[static_cast<std::size_t>(4 + i)] >> 1;
+    if (pos < 4 || pos > 7) in_slice = false;
+    seq4[static_cast<std::size_t>(i)] =
+        static_cast<std::uint8_t>(pos - 4);
+  }
+  if (in_slice) {
+    out.slice_perm = perm_rank_4(seq4);
+  } else {
+    std::array<int, 4> qq{};
+    std::array<int, 4> rr{};
+    slice_q_r(pc_edges, qq, rr);
+    std::array<std::uint8_t, 4> ru{};
+    for (int i = 0; i < 4; ++i) {
+      ru[static_cast<std::size_t>(i)] =
+          static_cast<std::uint8_t>(rr[static_cast<std::size_t>(i)]);
+    }
+    out.slice_perm = perm_rank_4(ru);
+  }
 }
 
 std::uint32_t upstream_corner_perm(const CubeState& state) {
@@ -1089,7 +1206,7 @@ LoadStatus describe_tables_dir(const std::filesystem::path& dir,
       st.fell_back_to_data = true;
       st.message = "tables\\: missing " + std::string(name) + " in " +
                    dir.string() +
-                   "; falling back to data\\ DBs (optimal PDBs)";
+                   "; falling back to data\\ DBs";
       return st;
     }
     if (fsize != spec.expected_bytes) {
@@ -1097,13 +1214,13 @@ LoadStatus describe_tables_dir(const std::filesystem::path& dir,
       st.message = "tables\\: size mismatch for " + std::string(name) + " (" +
                    std::to_string(fsize) + " != " +
                    std::to_string(spec.expected_bytes) +
-                   "); falling back to data\\ DBs (optimal PDBs)";
+                   "); falling back to data\\ DBs";
       return st;
     }
     if (verify_hashes && !sha256_file_matches(path, spec.sha256_hex)) {
       st.fell_back_to_data = true;
       st.message = "tables\\: SHA-256 mismatch for " + std::string(name) +
-                   "; falling back to data\\ DBs (optimal PDBs)";
+                   "; falling back to data\\ DBs";
       return st;
     }
   }

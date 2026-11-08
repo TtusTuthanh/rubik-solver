@@ -174,25 +174,42 @@ inline int heuristic_phase1(const CubeState& s,
 
 // Phase-2 heuristic via symmetry + parity-halved 2-bit table.
 // Returns 0 when tables are unavailable (admissible stub).
+// Tables are preloaded once (lazily on first call); each call is a
+// pure lookup with no load attempts or string construction.
 inline int heuristic_phase2(const CubeState& s,
                             rubik::tables::TablesAdapter& adapter) {
+  static const int kSymIdx =
+      rubik::tables::TableLoader::index_of("kociembaPhase2Symmetry");
+  static bool sym_attempted = false;
   if (!adapter.using_tables()) return 0;
-  // Ensure symmetry views are loaded (lazy; single-threaded here).
   auto& loader = adapter.loader();
-  (void)loader.load("kociembaPhase2Symmetry");
-  (void)loader.load("kociembaPhase2HeuristicHTM");
-  if (loader.phase2_symmetry_base() == nullptr) return 0;
-  const std::uint32_t cp = rubik::tables::upstream_corner_perm(s);
-  const std::uint32_t ud = rubik::tables::upstream_ud_perm(s);
-  const std::uint32_t slice = rubik::tables::upstream_slice_perm(s);
-  const std::uint32_t sym = loader.phase2_min_orientation(cp);
-  const std::uint32_t sym_cp = loader.phase2_corner_sym(cp, sym);
+  if (!sym_attempted) {
+    (void)loader.load_indexed(static_cast<std::size_t>(kSymIdx), false);
+    sym_attempted = true;
+  }
+  if (loader.view_indexed(static_cast<std::size_t>(kSymIdx)) == nullptr) return 0;
+  // Magnitudes: the 2-bit phase-2 table stores distance mod 3 only
+  // (max value 2), so it cannot guide deep phase-2 search alone.
+  // The corner/edge pattern databases measure full distance to
+  // solved, admissible for the G1-restricted phase-2 goal
+  // (fewer allowed moves can only lengthen the shortest path), and
+  // are essentially exact at shallow depths. Take the max.
+  rubik::tables::Phase2Coords c;
+  rubik::tables::upstream_phase2_coords(s, c);
+  const std::uint32_t sym = loader.phase2_min_orientation(c.corner_perm);
+  const std::uint32_t sym_cp = loader.phase2_corner_sym(c.corner_perm, sym);
+  // Symmetric position: the same orientation symmetrises corner,
+  // UD and slice coordinates before indexing (upstream
+  // getPhase2SymmetricPosition). Passing raw UD/slice indexes a
+  // wrong table cell (unrelated entry) and destroys admissibility.
+  const std::uint32_t sym_ud = loader.phase2_ud_sym(c.ud_perm, sym);
+  const std::uint32_t sym_sl = loader.phase2_e_sym(c.slice_perm, sym);
   const std::uint32_t cls = loader.phase2_equiv_class(sym_cp);
-  // Movement accessors (phase2 HTM successors; used for successor checks
-  // and to exercise the mmap path without affecting admissibility).
-  const std::uint32_t next_cp = loader.phase2_corner_move(cp, 0, rubik::tables::Metric::HTM);
-  (void)next_cp;
-  return adapter.h_phase2_from_coords(cls, ud, slice, rubik::tables::Metric::HTM);
+  const int h2 = adapter.h_phase2_from_coords(cls, sym_ud, sym_sl,
+                                              rubik::tables::Metric::HTM);
+  const int hc = adapter.h_corner(s, rubik::tables::Metric::HTM);
+  const int he = adapter.h_edge_perm(s, rubik::tables::Metric::HTM);
+  return std::max(h2, std::max(hc, he));
 }
 
 struct Searcher {
@@ -216,12 +233,7 @@ struct Searcher {
 
   int heuristic(const CubeState& s) {
     if (adapter == nullptr) return 0;
-    if (phase1_goal) {
-      // Touch phase1 movement accessors so the movement tables are
-      // exercised on the phase1 path as well (successor sanity only).
-      (void)adapter->loader().phase1_corner_move(0, 0, rubik::tables::Metric::HTM);
-      return heuristic_phase1(s, *adapter);
-    }
+    if (phase1_goal) return heuristic_phase1(s, *adapter);
     return heuristic_phase2(s, *adapter);
   }
 
@@ -245,6 +257,13 @@ struct Searcher {
     for (const int mv_idx : *allowed) {
       const int face = mv->face[static_cast<std::size_t>(mv_idx)];
       if (face == prev_face) continue;
+      // Canonical opposite-face ordering: opposite faces (U/D, R/L,
+      // F/B) commute, so keep one order and prune the duplicate.
+      // Reordering never changes the reached state or length, hence
+      // shortest solutions are preserved.
+      if (prev_face >= 0 && face == (prev_face + 3) % 6 && face < prev_face) {
+        continue;
+      }
       const CubeState nxt = fast_apply(cur, mv_idx, *mv);
       const int h = heuristic(nxt);
       const int f = g + 1 + h;
