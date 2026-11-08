@@ -1,10 +1,12 @@
 #pragma once
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <concepts>
 #include <cstdint>
 #include <expected>
 #include <stop_token>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -63,6 +65,16 @@ class IdaSearcher {
   void clearDeadline() { hasDeadline_ = false; }
   void setStopToken(std::stop_token token) { token_ = std::move(token); }
   void setAllowed(const std::vector<int>* allowed) { allowed_ = allowed; }
+  // thread_count <= 1 (or unsupported) keeps the exact current
+  // single-threaded path. For >1, only the root (g==0) candidate
+  // evaluation is parallelised (heuristic+apply); the DFS order and the
+  // subsequent stable_sort are unchanged, so the first solution found is
+  // identical to single-threaded mode. Parallelism never touches shared
+  // mutable searcher state: workers only write disjoint slots of the
+  // local candidate array, and `apply_`/`heuristic_` are invoked
+  // concurrently as pure reads over immutable PDB/move tables.
+  void setThreadCount(int n) { threadCount_ = n; }
+  [[nodiscard]] int threadCount() const { return threadCount_; }
 
   [[nodiscard]] std::uint64_t nodes() const { return nodes_; }
   [[nodiscard]] int abortKind() const { return abortKind_; }
@@ -109,24 +121,75 @@ class IdaSearcher {
       S state;
       int h = 0;
     };
-    std::vector<Cand> cands;
-    cands.reserve(allowed_->size());
-    for (const int m : *allowed_) {
-      S child = apply_(state, m);
-      cands.push_back(Cand{m, child, heuristic_(child)});
+    constexpr std::size_t kStackCap = 32;
+    const std::size_t n = allowed_->size();
+    // Heap fallback for unusually wide move sets (>32): preserves the exact
+    // pre-stack-array semantics; all production stages use <=18.
+    std::vector<Cand> heap;
+    std::array<Cand, kStackCap> stackBuf{};
+    Cand* cands = nullptr;
+    if (n <= kStackCap) {
+      cands = stackBuf.data();
+      const bool parallelRoot =
+          threadCount_ > 1 && g == 0 && n > 1;
+      if (!parallelRoot) {
+        for (std::size_t i = 0; i < n; ++i) {
+          const int m = (*allowed_)[i];
+          Cand& c = cands[i];
+          c.move = m;
+          c.state = apply_(state, m);
+          c.h = heuristic_(c.state);
+        }
+      } else {
+        // Bounded root parallelism: partition candidate indices into
+        // contiguous chunks; each worker writes only its chunk, evaluates
+        // heuristic/apply over immutable tables. Ordering afterwards is a
+        // plain stable_sort, so the DFS order and returned solution are
+        // identical to the single-threaded path.
+        const int nt = (std::min)(threadCount_, static_cast<int>(n));
+        auto worker = [&](int t) {
+          const std::size_t begin = static_cast<std::size_t>(t) * n /
+                                    static_cast<std::size_t>(nt);
+          const std::size_t end = static_cast<std::size_t>(t + 1) * n /
+                                  static_cast<std::size_t>(nt);
+          for (std::size_t i = begin; i < end; ++i) {
+            const int m = (*allowed_)[i];
+            Cand& c = cands[i];
+            c.move = m;
+            c.state = apply_(state, m);
+            c.h = heuristic_(c.state);
+          }
+        };
+        std::vector<std::thread> pool;
+        pool.reserve(static_cast<std::size_t>(nt - 1));
+        for (int t = 1; t < nt; ++t) {
+          pool.emplace_back(worker, t);
+        }
+        worker(0);
+        for (auto& th : pool) {
+          th.join();
+        }
+      }
+    } else {
+      heap.reserve(n);
+      for (const int m : *allowed_) {
+        S child = apply_(state, m);
+        heap.push_back(Cand{m, child, heuristic_(child)});
+      }
+      cands = heap.data();
     }
     // Stable ordering: ties keep the allowed-list (move-list) order, matching
     // baseline hand-rolled DFS. std::sort is unstable, so equal-h children
     // could be explored in implementation-defined order, causing
     // tie-order variance regressions (e.g. roux with n=18 candidates vs zz
     // n=9). stable_sort preserves input order deterministically.
-    std::stable_sort(cands.begin(), cands.end(),
+    std::stable_sort(cands, cands + n,
                      [](const Cand& a, const Cand& b) { return a.h < b.h; });
 
-    for (const Cand& c : cands) {
+    for (std::size_t i = 0; i < n; ++i) {
       if (found_ || abortKind_ != kAbortNone) return found_;
-      path_.push_back(c.move);
-      if (dfs(c.state, g + 1, bound)) return true;
+      path_.push_back(cands[i].move);
+      if (dfs(cands[i].state, g + 1, bound)) return true;
       path_.pop_back();
     }
     return false;
@@ -177,6 +240,7 @@ class IdaSearcher {
   }
 
   const std::vector<int>* allowed_ = nullptr;
+  int threadCount_ = 1;
   Apply apply_;
   Goal goal_;
   Heuristic heuristic_;

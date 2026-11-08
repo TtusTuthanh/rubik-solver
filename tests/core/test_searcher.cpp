@@ -183,6 +183,93 @@ void testCancelled() {
         "stopped token -> Cancelled");
 }
 
+void testThreadEquivalence() {
+  // Same toy search at thread_count 1 vs 2 must return identical
+  // move sequences and visit the same node count (identical DFS order).
+  std::vector<int> allowed{0, 1};
+  IdaSearcher<int, decltype(applyLine), decltype(isGoal(0)),
+              decltype(heuristicTo(0))>
+      s1(&allowed, applyLine, isGoal(3), heuristicTo(3));
+  s1.setThreadCount(1);
+  auto r1 = s1.run(0, 20);
+
+  IdaSearcher<int, decltype(applyLine), decltype(isGoal(0)),
+              decltype(heuristicTo(0))>
+      s2(&allowed, applyLine, isGoal(3), heuristicTo(3));
+  s2.setThreadCount(2);
+  auto r2 = s2.run(0, 20);
+
+  CHECK(r1.has_value() && r2.has_value(), "threads: both solve");
+  if (r1.has_value() && r2.has_value()) {
+    CHECK(*r1 == *r2, "threads: identical solution for tc 1 vs 2");
+    CHECK(s1.nodes() == s2.nodes(), "threads: identical node count");
+  }
+
+  // Threaded cancelled search still honours the token.
+  IdaSearcher<int, decltype(applyLine), decltype(isGoal(0)),
+              decltype(heuristicTo(0))>
+      s3(&allowed, applyLine, isGoal(8), heuristicTo(8));
+  s3.setThreadCount(2);
+  std::stop_source source;
+  source.request_stop();
+  s3.setStopToken(source.get_token());
+  auto r3 = s3.run(0, 20);
+  CHECK(!r3.has_value() && r3.error() == SolveError::Cancelled,
+        "threads: stopped token still -> Cancelled");
+
+  // Threaded expired deadline still honours the deadline.
+  IdaSearcher<int, decltype(applyLine), decltype(isGoal(0)),
+              decltype(heuristicTo(0))>
+      s4(&allowed, applyLine, isGoal(8), heuristicTo(8));
+  s4.setThreadCount(4);
+  s4.setDeadline(std::chrono::steady_clock::now() -
+                 std::chrono::seconds(1));
+  auto r4 = s4.run(0, 20);
+  CHECK(!r4.has_value() && r4.error() == SolveError::Timeout,
+        "threads: expired deadline still -> Timeout");
+}
+
+void testStableOrderingWithThreads() {
+  // Constant heuristic (all candidates tie) must preserve allowed-list
+  // order identically at thread_count 1 and 2 (stable_sort behaviour).
+  std::vector<int> allowed{1, 0};  // reversed order on purpose
+  auto zero = [](int) { return 0; };
+  IdaSearcher<int, decltype(applyLine), decltype(isGoal(0)),
+              decltype(zero)>
+      s1(&allowed, applyLine, isGoal(2), zero);
+  s1.setThreadCount(1);
+  auto r1 = s1.run(0, 20);
+
+  IdaSearcher<int, decltype(applyLine), decltype(isGoal(0)),
+              decltype(zero)>
+      s2(&allowed, applyLine, isGoal(2), zero);
+  s2.setThreadCount(2);
+  auto r2 = s2.run(0, 20);
+
+  CHECK(r1.has_value() && r2.has_value(), "tie test: both solve");
+  if (r1.has_value() && r2.has_value()) {
+    CHECK(*r1 == *r2, "tie test: identical path tc1 vs tc2");
+    // Only forward moves (0) can reach the goal; both must use them.
+    for (int m : *r2) CHECK(m == 0, "tie test: forward moves used");
+  }
+}
+
+void testHeapFallbackOver32() {
+  // Move set wider than the 32-slot stack buffer must preserve semantics
+  // via the heap fallback (and threaded root eval remains sequential).
+  std::vector<int> allowed;
+  for (int i = 0; i < 40; ++i) allowed.push_back(0);  // all forward
+  auto zero = [](int) { return 0; };
+  IdaSearcher<int, decltype(applyLine), decltype(isGoal(0)),
+              decltype(zero)>
+      s(&allowed, applyLine, isGoal(2), zero);
+  auto r = s.run(0, 20);
+  CHECK(r.has_value(), "fallback: wide move set still solves");
+  if (r.has_value()) {
+    CHECK(r->size() == 2, "fallback: shortest path length 2");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -192,6 +279,9 @@ int main() {
   testRespectsBound();
   testTimeout();
   testCancelled();
+  testThreadEquivalence();
+  testStableOrderingWithThreads();
+  testHeapFallbackOver32();
   if (g_failures == 0) {
     std::cout << "ALL TESTS PASSED\n";
     return 0;

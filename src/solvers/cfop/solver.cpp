@@ -982,7 +982,7 @@ std::expected<std::vector<int>, SolveError> runIda(
     const CubeState& start, StageKind kind, int pairIdx,
     const std::vector<int>& allowed, int stageLimit, bool hasDeadline,
     std::chrono::steady_clock::time_point deadline,
-    std::stop_token externalToken) {
+    std::stop_token externalToken, int threadCount = 1) {
   const MoveData& md = getMoveData();
   const Pdbs& pdbs = getPdbs();
   if (stageGoal(kind, pairIdx, start)) {
@@ -1008,6 +1008,7 @@ std::expected<std::vector<int>, SolveError> runIda(
   using SearcherT = core::IdaSearcher<SearchState, decltype(apply),
                                       decltype(goal), decltype(heuristic)>;
   SearcherT searcher(&allowed, apply, goal, heuristic);
+  searcher.setThreadCount(threadCount);
   if (hasDeadline) searcher.setDeadline(deadline);
   searcher.setStopToken(externalToken);
   const SearchState root{start, -1, false};
@@ -1021,6 +1022,7 @@ std::expected<std::vector<int>, SolveError> runIda(
   // goals and for "optimal depth exceeds stageLimit". Cfop semantics map
   // the latter to Timeout, so distinguish with a capped probe run.
   SearcherT probe(&allowed, apply, goal, heuristic);
+  probe.setThreadCount(threadCount);
   if (hasDeadline) probe.setDeadline(deadline);
   probe.setStopToken(externalToken);
   auto probeResult = probe.run(root, 40);
@@ -1279,7 +1281,7 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
   // Run stages explicitly so each predicate is checked with its own helper.
   {
     auto r = runIda(cur, StageKind::Cross, 0, a18, stageLimit, hasDeadline,
-                    deadline, options.stop_token);
+                    deadline, options.stop_token, options.thread_count);
     if (!r) return std::unexpected(r.error());
     const std::vector<int> idxs = *r;
     const std::vector<std::string> toks = tokensFor(idxs, md);
@@ -1296,7 +1298,7 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
   for (int k = 0; k < 4; ++k) {
     const std::string name = std::format("f2l_{}", k + 1);
     auto r = runIda(cur, StageKind::F2L, k, a18, stageLimit, hasDeadline,
-                    deadline, options.stop_token);
+                    deadline, options.stop_token, options.thread_count);
     if (!r) return std::unexpected(r.error());
     const std::vector<int> idxs = *r;
     const std::vector<std::string> toks = tokensFor(idxs, md);
@@ -1315,7 +1317,7 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
   }
   {
     auto r = runIda(cur, StageKind::Oll, 0, a15, stageLimit, hasDeadline,
-                    deadline, options.stop_token);
+                    deadline, options.stop_token, options.thread_count);
     if (!r) return std::unexpected(r.error());
     const std::vector<int> idxs = *r;
     const std::vector<std::string> toks = tokensFor(idxs, md);
@@ -1349,7 +1351,8 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
       // Fallback: two-phase split (corners then edges), then single-phase.
       {
         auto r1 = runIda(cur, StageKind::PllCorners, 0, a15, stageLimit,
-                         hasDeadline, deadline, options.stop_token);
+                         hasDeadline, deadline, options.stop_token,
+                         options.thread_count);
         if (!r1) {
           splitErr = r1.error();
         } else {
@@ -1361,7 +1364,8 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
             splitErr = SolveError::Timeout;
           } else {
             auto r2 = runIda(mid, StageKind::Pll, 0, a15, remaining,
-                             hasDeadline, deadline, options.stop_token);
+                             hasDeadline, deadline, options.stop_token,
+                             options.thread_count);
             if (!r2) {
               splitErr = r2.error();
             } else {
@@ -1383,7 +1387,7 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
         return std::unexpected(SolveError::Timeout);
       }
       auto r = runIda(cur, StageKind::Pll, 0, a15, stageLimit, hasDeadline,
-                      deadline, options.stop_token);
+                      deadline, options.stop_token, options.thread_count);
       if (!r) return std::unexpected(r.error());
       idxs = *r;
       ok = true;
