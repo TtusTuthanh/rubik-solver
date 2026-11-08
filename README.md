@@ -21,6 +21,8 @@ Toolchain measured 2026-11-08: CMake 4.4.3, g++ 16.2.0 (MSYS2 UCRT64), ninja 1.1
 --method <cfop|roux|zz|heise|twophase> [--scramble "R U R' ..."] [--facelets <54 chars>] [--random-depth N] [--seed N] [--data-dir DIR] [--tables-dir DIR] [--timeout-ms N]
 ```
 
+twophase finds its tables automatically (no `--tables-dir` needed). Discovery order (first match wins): (1) explicit `--tables-dir` / `--data-dir` / env `RUBIK_TABLES_DIR` / `RUBIK_DATA_DIR`, (2) `./tables/`, (3) `build/tables/` (where the gitignored tables live in this repo), (4) `<executable-dir>/tables/` + `<executable-dir>/../tables/`, (5) legacy `../tables`, `tables`. If no candidate contains them, twophase keeps h=0 and reports `Timeout` exactly (never an error), preserving the phase1 (18 moves) → G1 → phase2 (10 moves) semantics.
+
 Output: scramble, per-stage moves, total move count (each token counts as 1), elapsed time, and `verified: yes/no` from the independent reference simulator.
 
 Example:
@@ -73,7 +75,7 @@ Step-through cube net (`U` on top, `L F R B` middle, `D` bottom, URFDLB order) w
 
 ## External tables (`tables\`, gitignored)
 
-Supplied pattern tables (James Cameron solver, licence **unknown** — see `docs/tables.md` for SHA-256 manifest + format). `twophase` (phase1→G1→phase2) uses the `tables\` HTM set; a missing or truncated `tables\` set falls back to an h=0 search with a clear message. (Pre-removal, a tables-assisted benchmark over 500 scrambles is recorded in `benchmarks/tables_bench.txt`; full BFS ≤6 checks are in `tests/tables/`.)
+Supplied pattern tables (James Cameron solver, licence **unknown** — see `docs/tables.md` for SHA-256 manifest + format). `twophase` (phase1→G1→phase2) uses the `tables\` HTM set; a missing or truncated `tables\` set falls back to an h=0 search with a clear message. Default discovery (also in `--help`): explicit `--tables-dir` / `--data-dir` / env > `./tables/` > `build/tables/` > `<executable-dir>/tables/` + `<executable-dir>/../tables/` > legacy `../tables`, `tables`. (Pre-removal, a tables-assisted benchmark over 500 scrambles is recorded in `benchmarks/tables_bench.txt`; full BFS ≤6 checks are in `tests/tables/`.)
 
 ## Docs
 

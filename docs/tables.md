@@ -549,4 +549,21 @@ confirming byte-for-byte hashes locally (§1.1 vs upstream page).
 ## Approval (user 2026-11-08)
 
 User approved **All incl. two-phase**: integrate cornerHTM+edgePerm+phase1 as extra max() heuristics for the single-phase solver (HTM+all metrics), large (2.4GB, memory-mapped), and phase2+symmetry+movements as a **new two-phase solver method** (explicitly approved new method). Licence remains listed as **unknown** in this file (no upstream LICENSE); loader will fail-closed on size/hash. (The single-phase solver was later removed; see removal note at top.)
+
+## Appendix C — tables-dir discovery (twophase, no flag needed)
+
+`twophase` finds its tables automatically; `--tables-dir` is optional.
+Discovery order (first match wins; presence = `cornerHeuristicHTM` exists):
+
+1. explicit `--tables-dir` / `--data-dir` / env `RUBIK_TABLES_DIR` / `RUBIK_DATA_DIR` (and `set_tables_dir()` override);
+2. `./tables/`;
+3. `build/tables/` (gitignored 11.8 GB set in this repo);
+4. `<executable-dir>/tables/` and `<executable-dir>/../tables/`;
+5. legacy `../tables`, `tables`.
+
+Same order is printed by `rubik-solver --help` and in `README.md`.
+No table regeneration and no search-semantics change: phase1 still
+uses 18 HTM moves to G1, phase2 still uses the 10 G1-preserving moves,
+and when no candidate is present the solver keeps h=0 and reports
+`Timeout` exactly (never an error).
 Encoding utf8

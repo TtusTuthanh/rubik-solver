@@ -8,6 +8,10 @@
 // accessors (mmap'd, read-only). Falls back to h=0 when tables\ is
 // missing/invalid (still functional for shallow solves) and prints
 // the adapter status_message so the active source is explicit.
+// Tables-dir discovery (no flag needed): explicit --tables-dir /
+// --data-dir / RUBIK_TABLES_DIR > ./tables > build/tables >
+// <exe-dir>/tables + <exe-dir>/../tables > legacy ../tables, tables.
+// Missing tables => h=0 Timeout, never an error.
 // Frozen solve(CubeState, SolveOptions) signature is unchanged.
 #include <algorithm>
 #include <array>

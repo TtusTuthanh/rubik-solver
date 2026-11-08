@@ -1124,8 +1124,53 @@ std::uint64_t phase2_index(std::uint32_t class2768, std::uint32_t ud_perm,
 
 // -------------------------------------------------------------------------
 // Directory resolution / fallback.
+//
+// Discovery order (documented in the header + CLI --help + README):
+//   1. explicit --tables-dir / --data-dir / env (RUBIK_TABLES_DIR,
+//      RUBIK_DATA_DIR) / set_tables_dir() override, if present;
+//   2. ./tables/;  3. build/tables/;
+//   4. <exe-dir>/tables/ + <exe-dir>/../tables/;
+//   5. legacy ../tables, tables.
+// Presence is tested by cornerHeuristicHTM existing inside the dir.
 // -------------------------------------------------------------------------
+
+bool dir_contains_tables(const std::filesystem::path& dir) {
+  if (dir.empty()) return false;
+  std::error_code ec;
+  return std::filesystem::exists(dir / "cornerHeuristicHTM", ec);
+}
+
+std::filesystem::path executable_dir() {
+#if defined(_WIN32)
+  // GetModuleFileNameW via windows.h; 32768 covers long paths.
+  std::vector<wchar_t> buf(32768);
+  const DWORD n =
+      ::GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+  if (n == 0 || n >= buf.size()) return {};
+  std::filesystem::path p(std::wstring(buf.data(), n));
+  if (p.has_parent_path()) return p.parent_path();
+  return {};
+#else
+  char buf[4096];
+  const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+  if (n <= 0) return {};
+  buf[n] = '\0';
+  std::filesystem::path p(std::string(buf, static_cast<std::size_t>(n)));
+  if (p.has_parent_path()) return p.parent_path();
+  return {};
+#endif
+}
+
 std::filesystem::path default_tables_dir() {
+  // Discovery-aware default: prefer an actually-present tables dir so
+  // callers that pin `default_tables_dir()` (e.g. the visualiser) still
+  // find build/tables without a flag; otherwise the legacy fallback.
+  std::error_code ec;
+  std::filesystem::path cwd = std::filesystem::current_path(ec);
+  if (ec) cwd = std::filesystem::path(".");
+  const std::filesystem::path found = first_tables_dir(
+      tables_discovery_candidates(cwd, executable_dir()));
+  if (!found.empty()) return found;
 #if defined(_WIN32)
   return std::filesystem::path(".\\tables");
 #else
@@ -1142,6 +1187,57 @@ void set_tables_dir(const std::filesystem::path& dir) {
   }
 }
 
+std::vector<std::filesystem::path> tables_discovery_candidates(
+    const std::filesystem::path& cwd,
+    const std::filesystem::path& exe_dir) {
+  std::vector<std::filesystem::path> out;
+  auto add = [&out](const std::filesystem::path& p) {
+    if (p.empty()) return;
+    for (const auto& q : out) {
+      if (q == p) return;
+    }
+    out.push_back(p);
+  };
+  add(cwd / "tables");                    // (2) ./tables/
+  add(cwd / "build" / "tables");          // (3) build/tables/
+  if (!exe_dir.empty()) {                 // (4) exe-relative
+    add(exe_dir / "tables");
+    add(exe_dir / ".." / "tables");
+  }
+  add(cwd / ".." / "tables");             // (5) legacy ../tables
+  add(cwd / "tables");                    // (5) legacy tables (deduped)
+  // Legacy relative spellings kept working from a process cwd equal to
+  // `cwd` (".\/tables", "../tables", "tables") via the cwd-joined paths.
+  return out;
+}
+
+std::filesystem::path first_tables_dir(
+    const std::vector<std::filesystem::path>& candidates) {
+  for (const auto& c : candidates) {
+    if (dir_contains_tables(c)) return c;
+  }
+  return {};
+}
+
+std::filesystem::path discover_tables_dir(
+    const std::filesystem::path& explicit_dir,
+    const std::filesystem::path& cwd,
+    const std::filesystem::path& exe_dir) {
+  if (!explicit_dir.empty()) return explicit_dir;
+  if (const char* env = std::getenv("RUBIK_TABLES_DIR");
+      env != nullptr && env[0] != '\0') {
+    return std::filesystem::path(env);
+  }
+  if (const char* env = std::getenv("RUBIK_DATA_DIR");
+      env != nullptr && env[0] != '\0') {
+    return std::filesystem::path(env);
+  }
+  const std::filesystem::path found =
+      first_tables_dir(tables_discovery_candidates(cwd, exe_dir));
+  if (!found.empty()) return found;
+  return {};  // caller falls back to default (h=0 Timeout)
+}
+
 std::filesystem::path resolve_tables_dir() {
   {
     std::lock_guard<std::mutex> lock(g_dir_mutex);
@@ -1153,13 +1249,16 @@ std::filesystem::path resolve_tables_dir() {
       env != nullptr && env[0] != '\0') {
     return std::filesystem::path(env);
   }
-  for (const char* cand : {"./tables", "../tables", "tables"}) {
-    std::error_code ec;
-    if (std::filesystem::exists(
-            std::filesystem::path(cand) / "cornerHeuristicHTM", ec)) {
-      return std::filesystem::path(cand);
-    }
+  if (const char* env = std::getenv("RUBIK_DATA_DIR");
+      env != nullptr && env[0] != '\0') {
+    return std::filesystem::path(env);
   }
+  std::error_code ec;
+  std::filesystem::path cwd = std::filesystem::current_path(ec);
+  if (ec) cwd = std::filesystem::path(".");
+  const std::filesystem::path found = first_tables_dir(
+      tables_discovery_candidates(cwd, executable_dir()));
+  if (!found.empty()) return found;
   return default_tables_dir();
 }
 

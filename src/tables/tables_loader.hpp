@@ -451,12 +451,37 @@ std::uint64_t phase2_index(std::uint32_t class2768, std::uint32_t ud_perm,
 // Directory resolution / fallback (CLI plumbing). The integrator wires
 // --tables-dir in src/main.cpp and src/visualiser.cpp; this module only
 // exposes the API (it must NOT edit those files).
-// Default is ".\tables" (tables) per task scope.
+//
+// Default discovery order (no flag needed; each entry wins over later):
+//   1. explicit --tables-dir / --data-dir flag, else env
+//      RUBIK_TABLES_DIR / RUBIK_DATA_DIR, else set_tables_dir() override
+//      (set by the CLI only when a flag is present);
+//   2. ./tables/ (current working directory);
+//   3. build/tables/ (current working directory — where the gitignored
+//      11.8 GB table set lives in this repo);
+//   4. <executable-dir>/tables/ then <executable-dir>/../tables/;
+//   5. legacy relative paths: ./tables, ../tables, tables.
+// If none contains cornerHeuristicHTM, resolve falls back to
+// default_tables_dir() (".\tables") and twophase keeps h=0 + Timeout
+// (never an error). The same order is printed by `--help` and README.
 // -------------------------------------------------------------------------
 std::filesystem::path default_tables_dir();
 void set_tables_dir(const std::filesystem::path& dir);
 std::filesystem::path resolve_tables_dir();
 std::filesystem::path resolve_tables_dir(const std::filesystem::path& explicit_dir);
+
+// Testable helpers (no global state; safe for mocked dirs).
+bool dir_contains_tables(const std::filesystem::path& dir);
+std::filesystem::path executable_dir();
+std::vector<std::filesystem::path> tables_discovery_candidates(
+    const std::filesystem::path& cwd,
+    const std::filesystem::path& exe_dir);
+std::filesystem::path first_tables_dir(
+    const std::vector<std::filesystem::path>& candidates);
+std::filesystem::path discover_tables_dir(
+    const std::filesystem::path& explicit_dir,
+    const std::filesystem::path& cwd,
+    const std::filesystem::path& exe_dir);
 // Scan argv for `--tables-dir <path>` (integrator helper). Returns true
 // and sets out when found; the value is used exactly (no fallback).
 bool extract_tables_dir_flag(int argc, char* const argv[], std::filesystem::path& out);

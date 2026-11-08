@@ -27,6 +27,10 @@ using rubik::SolveOptions;
 
 void print_help() {
   std::cout << "Usage: rubik-solver --method <cfop|roux|zz|heise|twophase> [--scramble \"R U R' ...\"] [--facelets <54>] [--random-depth N] [--seed N] [--data-dir DIR] [--tables-dir DIR] [--timeout-ms N]\n";
+  std::cout << "Tables-dir discovery (twophase; first match wins):\n"
+               "  1. --tables-dir / --data-dir / env RUBIK_TABLES_DIR / RUBIK_DATA_DIR\n"
+               "  2. ./tables/  3. build/tables/  4. <exe-dir>/tables/ + <exe-dir>/../tables/\n"
+               "  5. legacy ../tables, tables.  Missing tables => h=0 fallback, Timeout (not an error).\n";
 }
 
 std::string error_name(SolveError e) {
@@ -101,13 +105,17 @@ int main(int argc, char* argv[]) {
     std::cerr << std::format("Error: unknown method '{}' (choose cfop|roux|zz|heise|twophase)\n", args.method);
     return 2;
   }
-  // Forward --tables-dir to tables set dir (twophase).
-  // Default tables dir is .\\tables via default_tables_dir().
-  (void)args.data_dir;  // legacy flag retained for compatibility
-  if (args.tables_dir.empty()) {
-    args.tables_dir = rubik::tables::default_tables_dir().string();
+  // Forward --tables-dir (or legacy --data-dir) to the tables set dir
+  // (twophase). Discovery when no flag is given: explicit flag/env >
+  // ./tables > build/tables > <exe-dir>/tables + <exe-dir>/../tables >
+  // legacy ../tables, tables; missing tables keep h=0 + Timeout.
+  // Only call set_tables_dir when a flag is present so auto-discovery
+  // (resolve_tables_dir) is not pinned to the legacy default.
+  if (!args.tables_dir.empty()) {
+    rubik::tables::set_tables_dir(args.tables_dir);
+  } else if (!args.data_dir.empty()) {
+    rubik::tables::set_tables_dir(args.data_dir);
   }
-  rubik::tables::set_tables_dir(args.tables_dir);
 
   // Build starting state: facelets > scramble > random > solved
   std::vector<std::string> scramble_tokens;

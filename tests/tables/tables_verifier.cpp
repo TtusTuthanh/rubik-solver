@@ -615,14 +615,90 @@ static int cmd_parity(int n, unsigned seed) {
   return ok ? 0 : 1;
 }
 
+// discovery: priority explicit > ./tables > build/tables (mock dirs, no
+// 11.8 GB tables needed). Uses the pure helpers so no cwd change or
+// global override is involved.
+static int cmd_discovery() {
+  std::cout << "discovery: start (mock dirs)\n";
+  int failures = 0;
+  auto check = [&](bool cond, const std::string& what) {
+    std::cout << "  " << what << ": " << (cond ? "ok" : "FAIL") << "\n";
+    if (!cond) ++failures;
+  };
+  std::error_code ec;
+  const fs::path root =
+      fs::temp_directory_path(ec) / "rubik_tables_discovery_mock";
+  fs::remove_all(root, ec);
+  fs::create_directories(root, ec);
+  const fs::path cwd = root / "work";
+  const fs::path exe_dir = root / "exe";
+  const fs::path local = cwd / "tables";          // (2) ./tables
+  const fs::path bld = cwd / "build" / "tables";  // (3) build/tables
+  const fs::path exe_t = exe_dir / "tables";      // (4)
+  const fs::path explicit_dir = root / "explicit";
+  auto make_tables = [&](const fs::path& d) {
+    fs::create_directories(d, ec);
+    std::ofstream(d / "cornerHeuristicHTM") << "mock";
+  };
+  // 0. Empty: no candidate wins (fallback would be h=0 Timeout).
+  {
+    const auto got = rubik::tables::first_tables_dir(
+        rubik::tables::tables_discovery_candidates(cwd, exe_dir));
+    check(got.empty(), "empty -> empty");
+  }
+  // 1. Explicit wins over ./tables + build/tables.
+  make_tables(local);
+  make_tables(bld);
+  make_tables(exe_t);
+  make_tables(explicit_dir);
+  {
+    const auto got = rubik::tables::discover_tables_dir(explicit_dir, cwd,
+                                                         exe_dir);
+    check(got == explicit_dir, "explicit wins");
+    check(rubik::tables::dir_contains_tables(explicit_dir),
+          "explicit dir_contains_tables");
+  }
+  // 2. ./tables wins over build/tables.
+  {
+    const auto got = rubik::tables::discover_tables_dir(fs::path(), cwd,
+                                                         exe_dir);
+    check(got == local, "./tables wins over build/tables");
+  }
+  // 3. build/tables wins when ./tables is absent.
+  fs::remove_all(local, ec);
+  {
+    const auto got = rubik::tables::discover_tables_dir(fs::path(), cwd,
+                                                         exe_dir);
+    check(got == bld, "build/tables when ./tables absent");
+  }
+  // 4. exe tables win when cwd candidates are absent.
+  fs::remove_all(bld, ec);
+  {
+    const auto got = rubik::tables::discover_tables_dir(fs::path(), cwd,
+                                                         exe_dir);
+    check(got == exe_t, "exe tables when cwd absent");
+  }
+  // 5. resolve-with-explicit still wins (global API).
+  {
+    const auto got =
+        rubik::tables::resolve_tables_dir(explicit_dir);
+    check(got == explicit_dir, "resolve_tables_dir(explicit) wins");
+  }
+  fs::remove_all(root, ec);
+  std::cout << "discovery: failures=" << failures << "\n";
+  std::cout << "discovery: " << (failures == 0 ? "PASS" : "FAIL") << "\n";
+  return failures == 0 ? 0 : 1;
+}
+
 int main(int argc, char* argv[]) {
   if (argc < 2) {
     std::cout << "Usage: tables_verifier <fallback|selftest|admissibility|"
-                 "parity> [args]\n";
+                 "discovery|parity> [args]\n";
     return 2;
   }
   const std::string cmd = argv[1];
   if (cmd == "fallback") return cmd_fallback();
+  if (cmd == "discovery") return cmd_discovery();
   if (cmd == "selftest") return cmd_selftest();
   if (cmd == "admissibility") {
     unsigned seed = 20261108u;
