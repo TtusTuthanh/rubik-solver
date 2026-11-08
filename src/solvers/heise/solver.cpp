@@ -14,8 +14,6 @@
 #include <vector>
 
 #include "core/moves.hpp"
-#include "core/pdb.hpp"
-#include "core/searcher.hpp"
 
 namespace rubik::heise {
 
@@ -402,15 +400,24 @@ std::vector<std::uint32_t> buildEdgeMoveTable(
 std::vector<std::uint8_t> buildSingleDb(
     const std::vector<std::uint32_t>& table, std::uint32_t entries,
     std::uint32_t startIdx, std::size_t moveCount) {
-  return core::bfsDb(entries, startIdx,
-                     [&table, moveCount](std::uint32_t idx) {
-                       std::array<std::uint32_t, 18> nxt{};
-                       for (std::size_t mi = 0; mi < moveCount; ++mi) {
-                         nxt[mi] =
-                             table[static_cast<std::size_t>(idx) * moveCount + mi];
-                       }
-                       return nxt;
-                     });
+  std::vector<std::uint8_t> dist(entries, 255u);
+  std::vector<std::uint32_t> queue;
+  queue.reserve(entries);
+  dist[startIdx] = 0u;
+  queue.push_back(startIdx);
+  std::size_t head = 0;
+  while (head < queue.size()) {
+    const std::uint32_t idx = queue[head++];
+    const std::uint8_t d = dist[idx];
+    for (std::size_t mi = 0; mi < moveCount; ++mi) {
+      const std::uint32_t nidx = table[static_cast<std::size_t>(idx) * moveCount + mi];
+      if (dist[nidx] == 255u) {
+        dist[nidx] = static_cast<std::uint8_t>(d + 1u);
+        queue.push_back(nidx);
+      }
+    }
+  }
+  return dist;
 }
 
 // Permutation-only move tables (successors ignore orientation) and combined
@@ -468,20 +475,30 @@ std::vector<std::uint8_t> buildCombinedPermDb(
     std::uint32_t edgeEntries, std::uint32_t cornerEntries,
     std::uint32_t startIdx, std::size_t moveCount) {
   const std::uint32_t total = edgeEntries * cornerEntries;
-  return core::bfsDb(total, startIdx, [&edgeTable, &cornerTable, cornerEntries,
-                                      moveCount](std::uint32_t idx) {
+  std::vector<std::uint8_t> dist(total, 255u);
+  std::vector<std::uint32_t> queue;
+  queue.reserve(total);
+  dist[startIdx] = 0u;
+  queue.push_back(startIdx);
+  std::size_t head = 0;
+  while (head < queue.size()) {
+    const std::uint32_t idx = queue[head++];
+    const std::uint8_t d = dist[idx];
     const std::uint32_t eIdx = idx / cornerEntries;
     const std::uint32_t cIdx = idx % cornerEntries;
-    std::array<std::uint32_t, 18> nxt{};
     for (std::size_t mi = 0; mi < moveCount; ++mi) {
       const std::uint32_t ne =
           edgeTable[static_cast<std::size_t>(eIdx) * moveCount + mi];
       const std::uint32_t nc =
           cornerTable[static_cast<std::size_t>(cIdx) * moveCount + mi];
-      nxt[mi] = ne * cornerEntries + nc;
+      const std::uint32_t nidx = ne * cornerEntries + nc;
+      if (dist[nidx] == 255u) {
+        dist[nidx] = static_cast<std::uint8_t>(d + 1u);
+        queue.push_back(nidx);
+      }
     }
-    return nxt;
-  });
+  }
+  return dist;
 }
 
 std::uint32_t cornerOriIndex(const std::array<std::uint8_t, 8>& co) {
@@ -954,7 +971,10 @@ const Pdbs& getPdbs() {
   return *gPdbs;
 }
 
-// (Pattern-database lookups and BFS fills reuse core/pdb.hpp.)
+inline int pdbLookup(const std::vector<std::uint8_t>& db, std::uint32_t idx) {
+  const std::uint8_t v = db[idx];
+  return (v == 255u) ? 0 : static_cast<int>(v);
+}
 
 // ---------------------------------------------------------------------------
 // Validity (face moves keep centres fixed, so inputs must have them fixed).
@@ -1020,16 +1040,29 @@ bool isUrfSolved(const CubeState& s) {
 }
 
 // ---------------------------------------------------------------------------
-// IDA* over the shared searcher. Heuristic = max of subproblem PDBs
-// (admissible). Move pruning (same face, opposite-face commutation) is
-// encoded in the wrapper state so the shared DFS stays generic.
+// IDA* searcher. Heuristic = max of subproblem PDBs (admissible).
 // ---------------------------------------------------------------------------
 enum class StageKind {
   Squares, Mid1, Mid2, Mid3, Orient,
   BrPair, Urf, UEdges, Pairs, Final, Oll
 };
 
-int stageHeuristic(StageKind kind, const Pdbs* pdbs, const CubeState& s) {
+struct Searcher {
+  StageKind kind = StageKind::Squares;
+  const std::vector<int>* allowed = nullptr;
+  const Pdbs* pdbs = nullptr;
+  const MoveData* mv = nullptr;
+  int bestExceed = 0;
+  std::vector<int> path;
+  std::vector<int> solution;
+  bool found = false;
+  int abortKind = 0;  // 0 none, 1 timeout, 2 cancelled
+  std::uint64_t nodes = 0;
+  bool hasDeadline = false;
+  std::chrono::steady_clock::time_point deadline{};
+  std::stop_token externalToken{};
+
+  int heuristic(const CubeState& s) const {
     // Cache cubie positions: cPos[cubie] = position, ePos[cubie] = position.
     std::array<std::uint8_t, 8> cPos{};
     std::array<std::uint8_t, 12> ePos{};
@@ -1121,90 +1154,90 @@ int stageHeuristic(StageKind kind, const Pdbs* pdbs, const CubeState& s) {
     const std::array<int, 4> cp = {7, 0, 0, 0};
     const std::array<int, 4> fc = {1, 2, 3, 0};
     int h = 0;
-    h = (std::max)(h, core::pdbLookup(pdbs->dEdge, edgeIdx(de, 4, kEdge4Blocks)));
+    h = (std::max)(h, pdbLookup(pdbs->dEdge, edgeIdx(de, 4, kEdge4Blocks)));
     if (kind == StageKind::Squares) {
-      h = (std::max)(h, core::pdbLookup(pdbs->dOrient, cornerOriIndex(s.co)));
+      h = (std::max)(h, pdbLookup(pdbs->dOrient, cornerOriIndex(s.co)));
       return h;
     }
     if (kind == StageKind::Mid1) {
-      h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[0], pairId(4, 8)));
+      h = (std::max)(h, pdbLookup(pdbs->f2lPair[0], pairId(4, 8)));
       return h;
     }
     if (kind == StageKind::Mid2) {
-      h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[0], pairId(4, 8)));
-      h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[1], pairId(5, 9)));
+      h = (std::max)(h, pdbLookup(pdbs->f2lPair[0], pairId(4, 8)));
+      h = (std::max)(h, pdbLookup(pdbs->f2lPair[1], pairId(5, 9)));
       return h;
     }
     if (kind == StageKind::Mid3) {
-      h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[0], pairId(4, 8)));
-      h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[1], pairId(5, 9)));
-      h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[2], pairId(6, 10)));
+      h = (std::max)(h, pdbLookup(pdbs->f2lPair[0], pairId(4, 8)));
+      h = (std::max)(h, pdbLookup(pdbs->f2lPair[1], pairId(5, 9)));
+      h = (std::max)(h, pdbLookup(pdbs->f2lPair[2], pairId(6, 10)));
       return h;
     }
-    h = (std::max)(h, core::pdbLookup(pdbs->dOrient, cornerOriIndex(s.co)));
-    h = (std::max)(h, core::pdbLookup(pdbs->dCorner3, cornerIdx(dc3, 3, kCorner3Blocks)));
+    h = (std::max)(h, pdbLookup(pdbs->dOrient, cornerOriIndex(s.co)));
+    h = (std::max)(h, pdbLookup(pdbs->dCorner3, cornerIdx(dc3, 3, kCorner3Blocks)));
     if (kind == StageKind::Orient) {
-      h = (std::max)(h, core::pdbLookup(pdbs->midEdge, edgeIdx(me, 3, kEdge3Blocks)));
-      h = (std::max)(h, core::pdbLookup(pdbs->eo, eoIdx(s)));
-      h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[0], pairId(4, 8)));
-      h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[1], pairId(5, 9)));
-      h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[2], pairId(6, 10)));
+      h = (std::max)(h, pdbLookup(pdbs->midEdge, edgeIdx(me, 3, kEdge3Blocks)));
+      h = (std::max)(h, pdbLookup(pdbs->eo, eoIdx(s)));
+      h = (std::max)(h, pdbLookup(pdbs->f2lPair[0], pairId(4, 8)));
+      h = (std::max)(h, pdbLookup(pdbs->f2lPair[1], pairId(5, 9)));
+      h = (std::max)(h, pdbLookup(pdbs->f2lPair[2], pairId(6, 10)));
       return h;
     }
     if (kind == StageKind::BrPair) {
-      h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[0], pairId(4, 8)));
-      h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[1], pairId(5, 9)));
-      h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[2], pairId(6, 10)));
-      h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[3], pairId(7, 11)));
+      h = (std::max)(h, pdbLookup(pdbs->f2lPair[0], pairId(4, 8)));
+      h = (std::max)(h, pdbLookup(pdbs->f2lPair[1], pairId(5, 9)));
+      h = (std::max)(h, pdbLookup(pdbs->f2lPair[2], pairId(6, 10)));
+      h = (std::max)(h, pdbLookup(pdbs->f2lPair[3], pairId(7, 11)));
       return h;
     }
     if (kind == StageKind::Oll) {
-      h = (std::max)(h, core::pdbLookup(pdbs->midEdge, edgeIdx(me, 3, kEdge3Blocks)));
-      h = (std::max)(h, core::pdbLookup(pdbs->eo, eoIdx(s)));
-      h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[0], pairId(4, 8)));
-      h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[1], pairId(5, 9)));
-      h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[2], pairId(6, 10)));
-      h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[3], pairId(7, 11)));
-      h = (std::max)(h, core::pdbLookup(pdbs->oriFull, cornerOriIndex(s.co)));
+      h = (std::max)(h, pdbLookup(pdbs->midEdge, edgeIdx(me, 3, kEdge3Blocks)));
+      h = (std::max)(h, pdbLookup(pdbs->eo, eoIdx(s)));
+      h = (std::max)(h, pdbLookup(pdbs->f2lPair[0], pairId(4, 8)));
+      h = (std::max)(h, pdbLookup(pdbs->f2lPair[1], pairId(5, 9)));
+      h = (std::max)(h, pdbLookup(pdbs->f2lPair[2], pairId(6, 10)));
+      h = (std::max)(h, pdbLookup(pdbs->f2lPair[3], pairId(7, 11)));
+      h = (std::max)(h, pdbLookup(pdbs->oriFull, cornerOriIndex(s.co)));
       return h;
     }
-    h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[0], pairId(4, 8)));
-    h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[1], pairId(5, 9)));
-    h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[2], pairId(6, 10)));
-    h = (std::max)(h, core::pdbLookup(pdbs->f2lPair[3], pairId(7, 11)));
+    h = (std::max)(h, pdbLookup(pdbs->f2lPair[0], pairId(4, 8)));
+    h = (std::max)(h, pdbLookup(pdbs->f2lPair[1], pairId(5, 9)));
+    h = (std::max)(h, pdbLookup(pdbs->f2lPair[2], pairId(6, 10)));
+    h = (std::max)(h, pdbLookup(pdbs->f2lPair[3], pairId(7, 11)));
     {
       const std::uint8_t at0 = cPos[0];
       const std::uint32_t uidx =
           static_cast<std::uint32_t>(at0 * 3 + s.co[static_cast<std::size_t>(at0)]);
-      h = (std::max)(h, core::pdbLookup(pdbs->urf, uidx));
+      h = (std::max)(h, pdbLookup(pdbs->urf, uidx));
     }
     if (kind == StageKind::Urf) return h;
-    h = (std::max)(h, core::pdbLookup(pdbs->midEdge, edgeIdx(me, 3, kEdge3Blocks)));
-    h = (std::max)(h, core::pdbLookup(pdbs->eo, eoIdx(s)));
-    h = (std::max)(h, core::pdbLookup(pdbs->uEdge, edgeIdx(ue, 4, kEdge4Blocks)));
-    h = (std::max)(h, core::pdbLookup(pdbs->cornerPair, cornerIdx(cp, 2, kCorner2Blocks)));
+    h = (std::max)(h, pdbLookup(pdbs->midEdge, edgeIdx(me, 3, kEdge3Blocks)));
+    h = (std::max)(h, pdbLookup(pdbs->eo, eoIdx(s)));
+    h = (std::max)(h, pdbLookup(pdbs->uEdge, edgeIdx(ue, 4, kEdge4Blocks)));
+    h = (std::max)(h, pdbLookup(pdbs->cornerPair, cornerIdx(cp, 2, kCorner2Blocks)));
     {
       const std::uint8_t at11 = ePos[11];
       const std::uint32_t bidx = static_cast<std::uint32_t>(
           at11 * 2 + s.eo[static_cast<std::size_t>(at11)]);
-      h = (std::max)(h, core::pdbLookup(pdbs->br, bidx));
+      h = (std::max)(h, pdbLookup(pdbs->br, bidx));
     }
-    h = (std::max)(h, core::pdbLookup(pdbs->pairPerm,
+    h = (std::max)(h, pdbLookup(pdbs->pairPerm,
                                edgePerm5() * kCorner2PermRank + cornerPerm2()));
-    h = (std::max)(h, core::pdbLookup(pdbs->uEdgeCorner,
+    h = (std::max)(h, pdbLookup(pdbs->uEdgeCorner,
                                edgeIdx(ue, 4, kEdge4Blocks) * kCorner2PermRank +
                                    cornerPerm2()));
-    h = (std::max)(h, core::pdbLookup(pdbs->ori5, cornerOriIndex(s.co)));
+    h = (std::max)(h, pdbLookup(pdbs->ori5, cornerOriIndex(s.co)));
     if (kind == StageKind::UEdges || kind == StageKind::Pairs) return h;
-    h = (std::max)(h, core::pdbLookup(pdbs->finalCorner3, cornerIdx(fc, 3, kCorner3Blocks)));
-    h = (std::max)(h, core::pdbLookup(pdbs->oriFull, cornerOriIndex(s.co)));
-    h = (std::max)(h, core::pdbLookup(pdbs->finalPerm,
+    h = (std::max)(h, pdbLookup(pdbs->finalCorner3, cornerIdx(fc, 3, kCorner3Blocks)));
+    h = (std::max)(h, pdbLookup(pdbs->oriFull, cornerOriIndex(s.co)));
+    h = (std::max)(h, pdbLookup(pdbs->finalPerm,
                                uEdgePerm4() * kCorner3PermRank +
                                    finalCornerPerm3()));
     return h;
   }
 
-bool stageGoal(StageKind kind, const CubeState& s) {
+  bool goal(const CubeState& s) const {
     if (kind == StageKind::Squares) return is_squares_solved(s);
     if (kind == StageKind::Mid1) {
       return isCrossSolved(s) && isF2lPairSolved(s, 4, 8);
@@ -1248,72 +1281,125 @@ bool stageGoal(StageKind kind, const CubeState& s) {
     return is_final_corners_solved(s);
   }
 
-// Wrapper state threading the previous move's face group through the
-// generic shared DFS. The shared searcher cannot skip moves itself, so an
-// illegal transition (same face, or commuting opposite faces in the
-// non-canonical order) yields a dead state whose heuristic is huge: the
-// child is pruned by the bound and never expands, reproducing the old
-// move filtering exactly without touching shared code. Dead-state bound
-// pollution is harmless: real exceeding values (small) are always the
-// minimum, and if no real exceeding value exists the goal is exhausted.
-struct SearchState {
-  CubeState cube;
-  int prevGroup = -1;  // -1: root, -2: dead/pruned, else face group 0..5
+  bool dfs(const CubeState& cur, int g, int prevGroup, int bound) {
+    if (abortKind != 0) return true;
+    if (goal(cur)) {
+      solution = path;
+      found = true;
+      return true;
+    }
+    if (((++nodes) & 1023u) == 0u) {
+      if (externalToken.stop_requested()) {
+        abortKind = 2;
+        return true;
+      }
+      if (hasDeadline && std::chrono::steady_clock::now() >= deadline) {
+        abortKind = 1;
+        return true;
+      }
+    }
+    const int h = heuristic(cur);
+    const int f = g + h;
+    if (f > bound) {
+      if (f < bestExceed) bestExceed = f;
+      return false;
+    }
+    struct Cand {
+      int h = 0;
+      int f = 0;
+      int mvIdx = -1;
+      CubeState next;
+    };
+    std::array<Cand, 18> cands;
+    int n = 0;
+    for (int mvIdx : *allowed) {
+      const int group = mv->faceGroup[static_cast<std::size_t>(mvIdx)];
+      if (group == prevGroup) continue;
+      // Opposite faces commute; keep only one order for efficiency.
+      if (prevGroup != -1 &&
+          ((prevGroup == 0 && group == 3) || (prevGroup == 3 && group == 0) ||
+           (prevGroup == 1 && group == 4) || (prevGroup == 4 && group == 1) ||
+           (prevGroup == 2 && group == 5) || (prevGroup == 5 && group == 2)) &&
+          group > prevGroup) {
+        continue;
+      }
+      const CubeState next = fastApply(cur, mvIdx, *mv);
+      const int hh = heuristic(next);
+      const int ff = g + 1 + hh;
+      if (ff > bound) {
+        if (ff < bestExceed) bestExceed = ff;
+        continue;
+      }
+      Cand& c = cands[static_cast<std::size_t>(n)];
+      c.h = hh;
+      c.f = ff;
+      c.mvIdx = mvIdx;
+      c.next = next;
+      ++n;
+    }
+    std::sort(cands.begin(), cands.begin() + n,
+              [](const Cand& a, const Cand& b) {
+                if (a.f != b.f) return a.f < b.f;
+                return a.h < b.h;
+              });
+    for (int i = 0; i < n; ++i) {
+      const int mvIdx = cands[static_cast<std::size_t>(i)].mvIdx;
+      path.push_back(mvIdx);
+      if (dfs(cands[static_cast<std::size_t>(i)].next, g + 1,
+              mv->faceGroup[static_cast<std::size_t>(mvIdx)], bound)) {
+        return true;
+      }
+      path.pop_back();
+      if (abortKind != 0) return true;
+    }
+    return false;
+  }
 };
 
-inline constexpr int kDeadHeuristic = 1 << 24;
-
-std::expected<std::vector<int>, SolveError> runStage(
+std::expected<std::vector<int>, SolveError> runIda(
     const CubeState& start, StageKind kind, const std::vector<int>& allowed,
     int stageLimit, bool hasDeadline,
     std::chrono::steady_clock::time_point deadline,
     std::stop_token externalToken) {
   const MoveData& md = getMoveData();
   const Pdbs& pdbs = getPdbs();
-  // Goal-first fast path (preserves the old entry behaviour, including not
-  // consulting deadline/token for an already-satisfied stage).
-  if (stageGoal(kind, start)) return std::vector<int>{};
-  auto applyFn = [&md](const SearchState& s, int mvIdx) -> SearchState {
-    if (s.prevGroup == -2) return s;
-    const int group = md.faceGroup[static_cast<std::size_t>(mvIdx)];
-    const int prev = s.prevGroup;
-    if (group == prev) return SearchState{s.cube, -2};
-    // Opposite faces commute; keep only one order for efficiency.
-    if (prev != -1 &&
-        ((prev == 0 && group == 3) || (prev == 3 && group == 0) ||
-         (prev == 1 && group == 4) || (prev == 4 && group == 1) ||
-         (prev == 2 && group == 5) || (prev == 5 && group == 2)) &&
-        group > prev) {
-      return SearchState{s.cube, -2};
+  Searcher searcher;
+  searcher.kind = kind;
+  searcher.allowed = &allowed;
+  searcher.pdbs = &pdbs;
+  searcher.mv = &md;
+  searcher.hasDeadline = hasDeadline;
+  searcher.deadline = deadline;
+  searcher.externalToken = externalToken;
+  if (searcher.goal(start)) return std::vector<int>{};
+  int bound = searcher.heuristic(start);
+  while (true) {
+    if (bound > stageLimit) return std::unexpected(SolveError::Timeout);
+    if (externalToken.stop_requested()) {
+      return std::unexpected(SolveError::Cancelled);
     }
-    return SearchState{fastApply(s.cube, mvIdx, md), group};
-  };
-  auto goalFn = [kind](const SearchState& s) -> bool {
-    if (s.prevGroup == -2) return false;
-    return stageGoal(kind, s.cube);
-  };
-  auto heurFn = [kind, &pdbs](const SearchState& s) -> int {
-    if (s.prevGroup == -2) return kDeadHeuristic;
-    return stageHeuristic(kind, &pdbs, s.cube);
-  };
-  core::IdaSearcher<SearchState, decltype(applyFn), decltype(goalFn),
-                    decltype(heurFn)>
-      searcher(&allowed, applyFn, goalFn, heurFn);
-  if (hasDeadline) searcher.setDeadline(deadline);
-  searcher.setStopToken(externalToken);
-  const SearchState root{start, -1};
-  auto result = searcher.run(root, stageLimit);
-  if (!result) {
-    // The shared searcher reports Unsolvable both when the goal is
-    // unreachable and when the bound would exceed stageLimit. From a
-    // validated cube the stage goals are reachable, so this means the
-    // depth limit was hit: report Timeout per the Solver contract.
-    if (result.error() == SolveError::Unsolvable) {
+    if (hasDeadline && std::chrono::steady_clock::now() >= deadline) {
       return std::unexpected(SolveError::Timeout);
     }
-    return std::unexpected(result.error());
+    searcher.bestExceed = 2147483647;
+    searcher.path.clear();
+    searcher.found = false;
+    searcher.abortKind = 0;
+    (void)searcher.dfs(start, 0, -1, bound);
+    if (searcher.found) return searcher.solution;
+    if (searcher.abortKind == 2) return std::unexpected(SolveError::Cancelled);
+    if (searcher.abortKind == 1) return std::unexpected(SolveError::Timeout);
+    if (externalToken.stop_requested()) {
+      return std::unexpected(SolveError::Cancelled);
+    }
+    if (hasDeadline && std::chrono::steady_clock::now() >= deadline) {
+      return std::unexpected(SolveError::Timeout);
+    }
+    if (searcher.bestExceed == 2147483647) {
+      return std::unexpected(SolveError::Unsolvable);
+    }
+    bound = searcher.bestExceed;
   }
-  return result;
 }
 
 std::vector<std::string> tokensFor(const std::vector<int>& idxs, const MoveData& md) {
@@ -1521,7 +1607,7 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
 
   // Stage 1: squares.
   {
-    auto r = runStage(cur, StageKind::Squares, faceIdx, stageLimit, hasDeadline,
+    auto r = runIda(cur, StageKind::Squares, faceIdx, stageLimit, hasDeadline,
                     deadline, options.stop_token);
     if (!r) return std::unexpected(r.error());
     const std::vector<int> idxs = *r;
@@ -1545,7 +1631,7 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
                                            StageKind::Mid3, StageKind::Orient};
     for (StageKind kind : subs) {
       auto subT0 = std::chrono::steady_clock::now();
-      auto r = runStage(cur, kind, faceIdx, stageLimit, hasDeadline,
+      auto r = runIda(cur, kind, faceIdx, stageLimit, hasDeadline,
                       deadline, options.stop_token);
       if (!r) return std::unexpected(r.error());
       const std::vector<int> idxs = *r;
@@ -1575,7 +1661,7 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
     const std::array<StageKind, 2> subs = {StageKind::BrPair, StageKind::Oll};
     for (StageKind kind : subs) {
       auto subT0 = std::chrono::steady_clock::now();
-      auto r = runStage(cur, kind, faceIdx, stageLimit, hasDeadline,
+      auto r = runIda(cur, kind, faceIdx, stageLimit, hasDeadline,
                       deadline, options.stop_token);
       if (!r) return std::unexpected(r.error());
       const std::vector<int> idxs = *r;
@@ -1607,7 +1693,7 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
       }
     }
     if (!bfs.has_value()) {
-      auto r = runStage(cur, StageKind::Pairs, faceIdx, stageLimit, hasDeadline,
+      auto r = runIda(cur, StageKind::Pairs, faceIdx, stageLimit, hasDeadline,
                       deadline, options.stop_token);
       if (!r) return std::unexpected(r.error());
       const std::vector<int> idxs = *r;
@@ -1649,7 +1735,7 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
     if (r.has_value()) {
       idxs = *r;
     } else {
-      auto rr = runStage(cur, StageKind::Final, faceIdx, stageLimit,
+      auto rr = runIda(cur, StageKind::Final, faceIdx, stageLimit,
                        hasDeadline, deadline, options.stop_token);
       if (!rr) return std::unexpected(rr.error());
       idxs = *rr;
