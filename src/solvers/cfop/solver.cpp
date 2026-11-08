@@ -964,6 +964,20 @@ int stageHeuristic(StageKind kind, int pairIdx, const Pdbs& pdbs,
   return h;
 }
 
+// Search state wraps the cube with the previously used face so the shared
+// searcher keeps the original same-face pruning (core::IdaSearcher has no
+// pruning hook). A same-face continuation is marked dead and given a huge
+// heuristic, so its f always exceeds the bound and the branch is pruned.
+// This is optimality-neutral: any path with two consecutive same-face moves
+// merges into a single move, so an optimal path never needs them.
+struct SearchState {
+  CubeState cube;
+  int prevFace = -1;
+  bool dead = false;
+};
+
+inline constexpr int kPruneHeuristic = 1 << 25;
+
 std::expected<std::vector<int>, SolveError> runIda(
     const CubeState& start, StageKind kind, int pairIdx,
     const std::vector<int>& allowed, int stageLimit, bool hasDeadline,
@@ -977,21 +991,27 @@ std::expected<std::vector<int>, SolveError> runIda(
   if (stageHeuristic(kind, pairIdx, pdbs, start) > stageLimit) {
     return std::unexpected(SolveError::Timeout);
   }
-  auto apply = [&](const CubeState& s, int mvIdx) {
-    return fastApply(s, mvIdx, md);
+  auto apply = [&](const SearchState& s, int mvIdx) {
+    const int face = mvIdx / 3;
+    if (face == s.prevFace) {
+      return SearchState{s.cube, s.prevFace, true};
+    }
+    return SearchState{fastApply(s.cube, mvIdx, md), face, false};
   };
-  auto goal = [&](const CubeState& s) {
-    return stageGoal(kind, pairIdx, s);
+  auto goal = [&](const SearchState& s) {
+    return !s.dead && stageGoal(kind, pairIdx, s.cube);
   };
-  auto heuristic = [&](const CubeState& s) {
-    return stageHeuristic(kind, pairIdx, pdbs, s);
+  auto heuristic = [&](const SearchState& s) {
+    if (s.dead) return kPruneHeuristic;
+    return stageHeuristic(kind, pairIdx, pdbs, s.cube);
   };
-  using SearcherT = core::IdaSearcher<CubeState, decltype(apply),
+  using SearcherT = core::IdaSearcher<SearchState, decltype(apply),
                                       decltype(goal), decltype(heuristic)>;
   SearcherT searcher(&allowed, apply, goal, heuristic);
   if (hasDeadline) searcher.setDeadline(deadline);
   searcher.setStopToken(externalToken);
-  auto result = searcher.run(start, stageLimit);
+  const SearchState root{start, -1, false};
+  auto result = searcher.run(root, stageLimit);
   if (result) return result;
   if (result.error() == SolveError::Timeout ||
       result.error() == SolveError::Cancelled) {
@@ -1003,7 +1023,7 @@ std::expected<std::vector<int>, SolveError> runIda(
   SearcherT probe(&allowed, apply, goal, heuristic);
   if (hasDeadline) probe.setDeadline(deadline);
   probe.setStopToken(externalToken);
-  auto probeResult = probe.run(start, 40);
+  auto probeResult = probe.run(root, 40);
   if (probeResult) {
     return std::unexpected(SolveError::Timeout);
   }
