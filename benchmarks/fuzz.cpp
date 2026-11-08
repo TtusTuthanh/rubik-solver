@@ -4,12 +4,12 @@
 // CMake wiring). See docs/SPEC.md sections 10 + 8.
 //
 // In a single process it loops over each method (cfop, roux, zz, heise at
-// scramble depth 25 and optimal at scramble depth <=10), generates N random
-// scrambles from the 18 face moves with fixed seeds, solves via
-// rubik::<method>::solve, verifies every solution with the independent
-// reference simulator (tests/core/reference_sim.hpp : solved + scramble +
-// solution == solved), and records success/failure/timeout counts,
-// total_moves stats (min/max/avg) and elapsed ms (avg/median/p95/max).
+// scramble depth 25), generates N random scrambles from the 18 face moves
+// with fixed seeds, solves via rubik::<method>::solve, verifies every
+// solution with the independent reference simulator
+// (tests/core/reference_sim.hpp : solved + scramble + solution == solved),
+// and records success/failure/timeout counts, total_moves stats
+// (min/max/avg) and elapsed ms (avg/median/p95/max).
 //
 // Output: the same report is printed to stdout and written to
 // benchmarks/results.txt (override with --output). Final results go to
@@ -23,21 +23,20 @@
 // src/core/cube.cpp src/core/moves.cpp src/core/validation.cpp
 // src/solvers/cfop/solver.cpp src/solvers/roux/solver.cpp
 // src/solvers/zz/solver.cpp src/solvers/heise/solver.cpp
-// src/solvers/optimal/solver.cpp -o benchmarks/fuzz  (MSYS2 bash).
+// -o benchmarks/fuzz  (MSYS2 bash).
 // PowerShell uses the same inputs with "C:\msys64\ucrt64\bin\g++.exe"
 // and -o benchmarks/fuzz.exe.
 //
 // Usage (defaults: trials=1000, all methods, seed-base=20261108):
-//   ./fuzz [--trials N] [--methods cfop,roux,zz,heise,optimal]
-//          [--seed-base N] [--human-depth 25] [--optimal-depth 10]
-//          [--human-timeout-ms 30000] [--optimal-timeout-ms 60000]
-//          [--human-max-depth 30] [--optimal-max-depth 20]
+//   ./fuzz [--trials N] [--methods cfop,roux,zz,heise]
+//          [--seed-base N] [--human-depth 25]
+//          [--human-timeout-ms 30000]
+//          [--human-max-depth 30]
 //          [--output benchmarks/results.txt]
 //          [--time-budget-sec S]   (0 = no limit; use to cap a reduced run)
 //
 // Exit code: 0 when every requested method with trials>0 reaches >=99%
-// verified success (and optimal is not DatabaseMissing); 1 otherwise;
-// 2 on CLI misuse.
+// verified success; 1 otherwise; 2 on CLI misuse.
 
 #include <algorithm>
 #include <chrono>
@@ -60,7 +59,6 @@
 #include "core/reference_sim.hpp"
 #include "solvers/cfop/solver.hpp"
 #include "solvers/heise/solver.hpp"
-#include "solvers/optimal/solver.hpp"
 #include "solvers/roux/solver.hpp"
 #include "solvers/zz/solver.hpp"
 
@@ -76,13 +74,10 @@ struct Config {
   int trials{1000};
   unsigned seed_base{20261108u};
   int human_depth{25};
-  int optimal_depth{10};
   int human_timeout_ms{30000};
-  int optimal_timeout_ms{60000};
   int human_max_depth{30};
-  int optimal_max_depth{20};
   std::string output{"benchmarks/results.txt"};
-  std::string methods{"cfop,roux,zz,heise,optimal"};
+  std::string methods{"cfop,roux,zz,heise"};
   double time_budget_sec{0.0};  // 0 = unlimited
   bool help{false};
 };
@@ -166,16 +161,10 @@ bool parse_args(int argc, char* argv[], Config& cfg, std::string& err) {
         cfg.seed_base = static_cast<unsigned>(std::stoul(need_value(a)));
       } else if (a == "--human-depth") {
         cfg.human_depth = std::stoi(need_value(a));
-      } else if (a == "--optimal-depth") {
-        cfg.optimal_depth = std::stoi(need_value(a));
       } else if (a == "--human-timeout-ms") {
         cfg.human_timeout_ms = std::stoi(need_value(a));
-      } else if (a == "--optimal-timeout-ms") {
-        cfg.optimal_timeout_ms = std::stoi(need_value(a));
       } else if (a == "--human-max-depth") {
         cfg.human_max_depth = std::stoi(need_value(a));
-      } else if (a == "--optimal-max-depth") {
-        cfg.optimal_max_depth = std::stoi(need_value(a));
       } else if (a == "--output") {
         cfg.output = need_value(a);
       } else if (a == "--methods") {
@@ -195,11 +184,11 @@ bool parse_args(int argc, char* argv[], Config& cfg, std::string& err) {
     err = "trials must be > 0";
     return false;
   }
-  if (cfg.human_depth < 0 || cfg.optimal_depth < 0) {
+  if (cfg.human_depth < 0) {
     err = "scramble depth must be >= 0";
     return false;
   }
-  if (cfg.human_timeout_ms <= 0 || cfg.optimal_timeout_ms <= 0) {
+  if (cfg.human_timeout_ms <= 0) {
     err = "timeout must be > 0";
     return false;
   }
@@ -227,10 +216,10 @@ std::vector<std::string> split_methods(const std::string& text) {
 }
 
 void print_help() {
-  std::cout << "Usage: fuzz [--trials N] [--methods cfop,roux,zz,heise,optimal]\n"
-               "            [--seed-base N] [--human-depth 25] [--optimal-depth 10]\n"
-               "            [--human-timeout-ms 30000] [--optimal-timeout-ms 60000]\n"
-               "            [--human-max-depth 30] [--optimal-max-depth 20]\n"
+  std::cout << "Usage: fuzz [--trials N] [--methods cfop,roux,zz,heise]\n"
+               "            [--seed-base N] [--human-depth 25]\n"
+               "            [--human-timeout-ms 30000]\n"
+               "            [--human-max-depth 30]\n"
                "            [--output benchmarks/results.txt]\n"
                "            [--time-budget-sec S] (0 = no limit)\n";
 }
@@ -285,15 +274,6 @@ bool verify_solution(const std::vector<std::string>& scramble,
   std::string f = refsim::apply_sequence(refsim::solved_facelets(), scramble);
   f = refsim::apply_sequence(f, solution_tokens(sol));
   return f == refsim::solved_facelets();
-}
-
-bool optimal_db_present() {
-  const std::filesystem::path dir = rubik::optimal::resolve_data_dir();
-  std::error_code ec;
-  return std::filesystem::exists(dir / rubik::optimal::kCornerFileName, ec) &&
-         std::filesystem::exists(dir / rubik::optimal::kEdge1FileName, ec) &&
-         std::filesystem::exists(dir / rubik::optimal::kEdge2FileName, ec) &&
-         std::filesystem::exists(dir / rubik::optimal::kEdge3FileName, ec);
 }
 
 double percentile_sorted(const std::vector<double>& sorted, double p) {
@@ -372,8 +352,6 @@ int main(int argc, char* argv[]) {
        200000u, &rubik::zz::solve},
       {"heise", cfg.human_depth, cfg.human_timeout_ms, cfg.human_max_depth, 1,
        300000u, &rubik::heise::solve},
-      {"optimal", cfg.optimal_depth, cfg.optimal_timeout_ms,
-       cfg.optimal_max_depth, 4, 400000u, &rubik::optimal::solve},
   };
 
   std::vector<MethodCfg> methods;
@@ -414,23 +392,8 @@ int main(int argc, char* argv[]) {
     opts.max_depth = mc.max_depth;
     opts.thread_count = mc.thread_count;
 
-    // DatabaseMissing preflight for optimal: skip 1000 identical failures,
-    // report once instead.
-    if (mc.name == "optimal" && !optimal_db_present()) {
-      st.skipped_database_missing = true;
-      st.warmup_error = "DatabaseMissing (preflight: data/*.db not found)";
-      const auto method_t1 = std::chrono::steady_clock::now();
-      st.method_wall_sec =
-          std::chrono::duration<double>(method_t1 - method_t0).count();
-      std::cerr << std::format("[fuzz] {}: skipped (DatabaseMissing preflight, {})\n",
-                               mc.name,
-                               rubik::optimal::resolve_data_dir().string());
-      stats.push_back(std::move(st));
-      continue;
-    }
-
-    // Warmup (not counted): one solve so lazy PDB/move-table builds and
-    // the ~108 MB optimal DB load do not inflate trial timing stats.
+    // Warmup (not counted): one solve so lazy move-table builds and
+    // table loads do not inflate trial timing stats.
     {
       std::mt19937 warm_rng(st.seed + 999999u);
       const std::vector<std::string> warm_scramble =
@@ -556,10 +519,10 @@ int main(int argc, char* argv[]) {
   // both are byte-identical.
   std::string report;
   report += std::format("rubik-solver fuzz benchmark (SPEC section 10)\n");
-  report += std::format("seed_base: {} (per-method seed = seed_base + offset; offsets cfop=0 roux=100000 zz=200000 heise=300000 optimal=400000)\n", cfg.seed_base);
+  report += std::format("seed_base: {} (per-method seed = seed_base + offset; offsets cfop=0 roux=100000 zz=200000 heise=300000)\n", cfg.seed_base);
   report += std::format("requested_trials_per_method: {}\n", cfg.trials);
-  report += std::format("scramble: {} random face moves (18-face pool, no same-face repeat) for human methods; {} for optimal; per-method mt19937\n", cfg.human_depth, cfg.optimal_depth);
-  report += std::format("options: human timeout_ms={} max_depth={} thread_count=1 | optimal timeout_ms={} max_depth={} thread_count=4\n", cfg.human_timeout_ms, cfg.human_max_depth, cfg.optimal_timeout_ms, cfg.optimal_max_depth);
+  report += std::format("scramble: {} random face moves (18-face pool, no same-face repeat); per-method mt19937\n", cfg.human_depth);
+  report += std::format("options: human timeout_ms={} max_depth={} thread_count=1\n", cfg.human_timeout_ms, cfg.human_max_depth);
   report += std::format("verify: refsim solved+scramble+solution==solved; timing excludes scramble+verify, excludes warmup; warmup_ms per method below\n");
   if (cfg.trials < 1000) {
     report += std::format("note: reduced run (SPEC section 10 acceptance needs 1000 trials/method); scale per-trial avg/median/p95 to 1000 to extrapolate full runtime\n");
@@ -605,7 +568,7 @@ int main(int argc, char* argv[]) {
       report += std::format("  warmup_error: {}\n", st.warmup_error);
     }
     if (st.skipped_database_missing) {
-      report += "  status: SKIPPED (DatabaseMissing - data/*.db missing; rebuild with build_pattern_db)\n";
+      report += "  status: SKIPPED (DatabaseMissing - tables in tables/ missing; see data dir)\n";
     } else if (st.incomplete) {
       report += "  status: INCOMPLETE (time budget hit; attempted < requested)\n";
     } else {

@@ -4,7 +4,7 @@ Date: 2026-11-08. Status: P0 draft — STOPPED for user approval before writing 
 
 ## 1. Goal & Methods
 
-C++23 CLI that solves a 3x3 cube with one user-selected method per run: `cfop`, `roux`, `zz`, `heise`, or `optimal` (IDA* + pattern databases). One common interface, method registry name → solver.
+C++23 CLI that solves a 3x3 cube with one user-selected method per run: `cfop`, `roux`, `zz`, `heise`, or `twophase` (Kociemba two-phase + supplied tables). One common interface, method registry name → solver.
 
 ## 2. Toolchain (measured 2026-11-08)
 
@@ -27,15 +27,14 @@ Usage (read-only): `crawl4ai.scrape` / `duckduckgo.search` / `markitdown` / `pdf
 CMakeLists.txt                  # root, only main agent edits
 .gitignore                      # data/ + build/
 src/core/                       # CubeState (CP,CO,EP,EO), 54-facelet conv, 18 face moves + M/E/S (+ ' and 2) + rotations, WCA parse/format, validation, reference simulator (tests only)
-src/solvers/{cfop,roux,zz,heise,optimal}/
+src/solvers/{cfop,roux,zz,heise,twophase}/
 src/main.cpp                    # CLI
-src/build_pattern_db.cpp        # separate executable, --data-dir DIR
 tests/                          # CTest, GoogleTest
 docs/SPEC.md, docs/methods/heise.md
 data/                           # generated DBs, never committed (# ~105 MB)
 ```
 
-Subagent boundaries: P1 `core-engineer` → `src/core/`+tests; P2 `pdb-engineer` → `src/solvers/optimal/`+builder+admissibility; P3 solver-engineers (one per human method, after interface freeze) → own dirs only. Main agent owns root CMake, common interface, integration. Max 3 concurrent. Check official OpenCode docs for agent-definition format/location before creating any agent file — do not guess.
+Subagent boundaries: P1 `core-engineer` → `src/core/`+tests; P2 `pdb-engineer` → `src/solvers/twophase/`+tables+admissibility; P3 solver-engineers (one per human method, after interface freeze) → own dirs only. Main agent owns root CMake, common interface, integration. Max 3 concurrent. Check official OpenCode docs for agent-definition format/location before creating any agent file — do not guess.
 
 ## 5. Common interface (freeze after P1)
 
@@ -62,15 +61,13 @@ enum class SolveError { Unsolvable, Timeout, Cancelled, DatabaseMissing, /* ... 
 - **Heise:** canonical 4 stages per `docs/methods/heise.md` (SpeedSolving Wiki + Ryan Heise site agree; Old Heise / Speed-Heise are variants, out of scope).
 - All human methods: assert stage predicate after each stage; assert restricted move set per stage; per-stage IDA*/BFS + small pruning allowed; algorithm tables allowed only if simulation-verified; fingertricks not required.
 
-## 8. Optimal solver (IDA* + PDBs)
+## 8. Two-phase solver (Kociemba)
 
-Design (inspired by crux README # https://github.com/aravinth-kanesh/crux — no code copied; cite Korf 1997):
+Design (inspired by the upstream public solver `tables\` set — licence unknown, see `docs/tables.md`; cite Kociemba 2008 two-phase method):
 
-- Heuristic = max of 4 admissible PDBs: corner 8!×3^7=88,179,840 (~42 MB); edge-6 UR/UF/UL/UB/DR/DF (~21 MB); edge-6 DL/DB/FR/FL/BL/BR (~21 MB); edge-6 UR/UL/DR/DL/FR/BL (~21 MB). ~105 MB total, stored in `data/`.
-- 18 face moves, precomputed move tables, O(1) index updates.
-- 18 root moves spread across threads; abort as soon as one thread finds a solution (std::jthread + stop_token).
-- Builder: separate `build_pattern_db --data-dir DIR`, ~5–10 min; DB files carry version header + size check; mismatched files → `DatabaseMissing` error.
-- Performance reference (Apple M-series 8 cores): ≤12 moves in ms; depth 15 median ~33 s → plan timeouts/cancellation. Never report "optimal" unless IDA* completed; on timeout → `Timeout` error.
+- Phase 1 (any of the 18 face moves) reaches G1 (corner/edge orientations solved, slice cubies in place); phase 2 (10 G1-preserving moves) reaches solved. Each phase is IDA* with a tables-backed admissible heuristic.
+- Heuristics come from the supplied `tables\` set (corner/edge-permutation/phase-1/phase-2 HTM helpers + symmetry + movement tables, mmap'd read-only). A missing or invalid `tables\` set degrades the heuristic to h=0 (still correct, much slower on deep scrambles) and the loader prints a fallback message; `SolveError::DatabaseMissing` is returned when the tables adapter is unavailable.
+- Staged solutions are reported as two stages (`phase1`, `phase2`); on timeout → `Timeout` error.
 
 ## 9. CLI
 
@@ -79,7 +76,7 @@ Design (inspired by crux README # https://github.com/aravinth-kanesh/crux — no
 ## 10. Testing & acceptance
 
 - `ctest` passes; release build zero warnings.
-- 1,000 random scrambles/method (depth 25 human, depth ≤10 optimal) solve per reference simulator; stage predicates + move-set restrictions hold; each PDB value ≤ true BFS distance for all states within depth ≤6; optimal solutions for ≤10-move scrambles no longer than scramble and match BFS-optimal ≤7; invalid facelets (twisted/flipped/parity) rejected with specific error; `git ls-files` shows no `*.db`; README benchmark table from real runs on this machine.
+- 1,000 random scrambles/method (depth 25 human) solve per reference simulator; stage predicates + move-set restrictions hold; each tables heuristic ≤ true BFS distance for all states within depth ≤6; twophase solutions verify against the reference simulator (solutions are valid, not guaranteed length-minimal); invalid facelets (twisted/flipped/parity) rejected with specific error; `git ls-files` shows no `*.db`; README benchmark table from real runs on this machine.
 
 ## 11. Actions / stops
 
@@ -93,6 +90,6 @@ Forbidden: `git push`, history rewrites, `sudo`, global installs, out-of-tree ed
 
 ## References
 
-- Korf, R.E. (1997). *Finding Optimal Solutions to Rubik's Cube Using Pattern Databases*. AAAI/IAAI.
+- Korf, R.E. (1997). *Finding Optimal Solutions to Rubik's Cube Using Pattern Databases*. AAAI/IAAI. (Cited for the PDB/IDA* concept; the removed solver is not in this tree — see git history.)
 - SpeedSolving Wiki: CFOP / Roux / ZZ / Heise (URLs in §7 and `docs/methods/heise.md`).
 - crux (layout only, no code copied): https://github.com/aravinth-kanesh/crux

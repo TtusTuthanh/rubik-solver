@@ -1,8 +1,8 @@
 # rubik-solver
 
-C++23 3×3 Rubik's cube solver: **CFOP, Roux, ZZ, Heise, and optimal (IDA\* + pattern databases)**. Cite: Korf (1997), *"Finding Optimal Solutions to Rubik's Cube Using Pattern Databases"*, AAAI/IAAI.
+C++23 3×3 Rubik's cube solver: **CFOP, Roux, ZZ, Heise, and twophase (Kociemba two-phase + supplied tables)**.
 
-Built with CMake (C++23, `-Wall -Wextra -Wpedantic`). GoogleTest via FetchContent is the only dependency. Pattern databases are generated into `data/` (~108 MB) and are not committed.
+Built with CMake (C++23, `-Wall -Wextra -Wpedantic`). GoogleTest via FetchContent is the only dependency. The supplied pattern tables in `tables\` (gitignored) feed `twophase` heuristics.
 
 ## Build (Windows/MinGW g++ 16.2, measured)
 
@@ -10,7 +10,6 @@ Built with CMake (C++23, `-Wall -Wextra -Wpedantic`). GoogleTest via FetchConten
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ctest --test-dir build -V
-.\build\build_pattern_db.exe --data-dir data   # ~78 s measured; 5-10 min typical
 .\build\rubik-solver.exe --method cfop --scramble "R U R' U'"
 ```
 
@@ -19,7 +18,7 @@ Toolchain measured 2026-11-08: CMake 4.4.3, g++ 16.2.0 (MSYS2 UCRT64), ninja 1.1
 ## CLI
 
 ```
---method <cfop|roux|zz|heise|optimal|twophase> [--scramble "R U R' ..."] [--facelets <54 chars>] [--random-depth N] [--seed N] [--data-dir DIR] [--tables-dir DIR] [--timeout-ms N]
+--method <cfop|roux|zz|heise|twophase> [--scramble "R U R' ..."] [--facelets <54 chars>] [--random-depth N] [--seed N] [--data-dir DIR] [--tables-dir DIR] [--timeout-ms N]
 ```
 
 Output: scramble, per-stage moves, total move count (each token counts as 1), elapsed time, and `verified: yes/no` from the independent reference simulator.
@@ -44,11 +43,11 @@ verified: yes
 - **Roux:** first block (1×2×3) → second block → CMLL → LSE (M + U only)
 - **ZZ:** EOLine → ZZF2L (R/L/U only) → COLL → EPLL (ZBLL optional)
 - **Heise:** squares → F2L-1 → corner-edge pairs → final corners (see `docs/methods/heise.md`)
-- **Optimal:** IDA\* with heuristic = max of 4 admissible PDBs (corner 8!×3⁷ = 88,179,840 entries ~44 MB; three edge-6 PDBs of 42,577,920 entries ~21 MB each; ~108 MB total). Never reported as "optimal" unless IDA\* completed; on timeout → `Timeout` error.
+- **Twophase:** phase1 (any face move) → G1 → phase2 (G1-preserving moves) → solved, using the supplied `tables\` HTM heuristics (admissible per phase); missing tables fall back to an h=0 search, on timeout → `Timeout` error.
 
 ## Benchmarks (this machine, real runs)
 
-`benchmarks/fuzz.exe` (single process, `seed_base=20261108`, human depth 25, optimal depth 10, human timeout 30 s, warmup excluded). Full 1000-trial run, 2026-11-08 (`benchmarks/results_full.txt`, 4577 s wall):
+`benchmarks/fuzz.exe` (single process, `seed_base=20261108`, human depth 25, human timeout 30 s, warmup excluded). Full 1000-trial run, 2026-11-08 (`benchmarks/results_full.txt`, 4577 s wall):
 
 | method | trials | success | avg moves (min–max) | avg ms | median ms | p95 ms | max ms |
 |---|---|---|---|---|---|---|---|
@@ -56,13 +55,12 @@ verified: yes
 | roux | 1000 | 98.9% (989/1000, 11 timeouts at 30 s) | 36.6 (27–45) | 1954 | 322 | 8541 | 26908 |
 | zz | 1000 | 100% (1000/1000) | 48.3 (29–59) | 206 | 35 | 942 | 12299 |
 | heise | 1000 | 99.9% (999/1000, 1 timeout at 30 s) | 75.5 (33–98) | 1753 | 237 | 8828 | 28697 |
-| optimal (depth ≤10) | 1000 | 100% (1000/1000) | 9.6 (4–10) | 1.0 | 0.8 | 1.9 | 9.7 |
 
-Verify failures = 0 for every method (every returned solution re-checked with the reference simulator). Roux/heise have heavy tails (p95 ~8.5–8.8 s); timeouts are the 30 s limit, not wrong solutions (slowest roux success 26.9 s; slowest heise success 28.7 s). Warmup (PDB/table builds, excluded above): cfop 13.3 s, roux 0.5 s, zz 0.9 s, heise 6.4 s, optimal 4.4 s. The earlier 200-trial spot-check is in `benchmarks/results.txt` (same rates).
+Verify failures = 0 for every method (every returned solution re-checked with the reference simulator). Roux/heise have heavy tails (p95 ~8.5–8.8 s); timeouts are the 30 s limit, not wrong solutions (slowest roux success 26.9 s; slowest heise success 28.7 s). Warmup (PDB/table builds, excluded above): cfop 13.3 s, roux 0.5 s, zz 0.9 s, heise 6.4 s. The earlier 200-trial spot-check is in `benchmarks/results.txt` (same rates).
 
 ## Tests
 
-`ctest` — 6 suites, 75 tests (core 19, optimal 13, cfop 11, roux 10, zz 11, heise 11). PDB admissibility ≤ depth 6 (pattern space) / ≤5 (full cube, ~700k states), optimal matches BFS ≤ depth 7, invalid facelets (twist/flip/parity) rejected with specific errors. `git ls-files` shows no `*.db`.
+`ctest` — 5 suites, 62 tests (core 19, cfop 11, roux 10, zz 11, heise 11). Tables admissibility ≤ depth 6 (pattern space) / ≤5 (full cube, ~700k states) is exercised via `tests/tables/tables_verifier` (standalone, not part of ctest). Invalid facelets (twist/flip/parity) rejected with specific errors. `git ls-files` shows no `*.db`.
 
 ## Visualiser (P5 Option 1 — terminal ANSI)
 
@@ -75,14 +73,7 @@ Step-through cube net (`U` on top, `L F R B` middle, `D` bottom, URFDLB order) w
 
 ## External tables (`tables\`, gitignored)
 
-Supplied pattern tables (James Cameron solver, licence **unknown** — see `docs/tables.md` for SHA-256 manifest + format). `optimal` now takes `max(data\ PDBs, tables HTM set)`; missing/truncated `tables\` falls back to `data\` with a clear message. New method `twophase` (phase1→G1→phase2) uses the same tables.
-
-| config | successes | avg ms | median ms | p95 ms | max ms |
-|---|---|---|---|---|---|
-| with `tables\` | 500 | 0.94 | 0.36 | 3.40 | 26.69 |
-| without (`data\` only) | 500 | 0.81 | 0.35 | 2.63 | 33.46 |
-
-(Same 500 scrambles, seed 888002, depth 1..11; identical optimal lengths, 0 verify-fails. At depth ≤11 the tables add no speedup — the win is admissible strength at depth, not latency. Full BFS ≤6: 8,240,087 states, 0 violations; 1M-index comparison vs `data\`: corner identical 1M/1M. See `benchmarks/tables_bench.txt` + `tests/tables/`.)
+Supplied pattern tables (James Cameron solver, licence **unknown** — see `docs/tables.md` for SHA-256 manifest + format). `twophase` (phase1→G1→phase2) uses the `tables\` HTM set; a missing or truncated `tables\` set falls back to an h=0 search with a clear message. (Pre-removal, a tables-assisted benchmark over 500 scrambles is recorded in `benchmarks/tables_bench.txt`; full BFS ≤6 checks are in `tests/tables/`.)
 
 ## Docs
 
