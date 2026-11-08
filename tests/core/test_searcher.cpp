@@ -231,9 +231,10 @@ void testThreadEquivalence() {
         "threads: expired deadline still -> Timeout");
 }
 
-void testStableOrderingWithThreads() {
-  // Constant heuristic (all candidates tie) must preserve allowed-list
-  // order identically at thread_count 1 and 2 (stable_sort behaviour).
+void testSortOrderingWithThreads() {
+  // Constant heuristic (all candidates tie) must give identical
+  // std::sort order at thread_count 1 and 2 (baseline unstable-sort
+  // semantics: same live sequence, same sort, same order).
   std::vector<int> allowed{1, 0};  // reversed order on purpose
   auto zero = [](int) { return 0; };
   IdaSearcher<int, decltype(applyLine), decltype(isGoal(0)),
@@ -414,6 +415,154 @@ void testBaselineParity() {
   }
 }
 
+// -- Baseline unstable-sort parity at 18 candidates with ties ----------------
+// With a constant heuristic, all 18 children tie on (f, h). Baseline uses
+// std::sort (unstable introsort: at n=18 the quicksort path reorders ties),
+// while a stable_sort would keep allowed-list order. The shared searcher
+// must reproduce the baseline std::sort permutation exactly (same live
+// sequence + same comparator => same permutation), including its
+// node-visit order and resulting solution. This test fails if someone
+// reintroduces stable_sort or an explicit move-index tiebreak.
+void testBaselineUnstableSortParity18() {
+  constexpr int kMoves = 18;
+  // Faces 0..5, three moves per face (mirrors faceGroup = i/3).
+  static constexpr int kFace18[kMoves] = {0, 0, 0, 1, 1, 1, 2, 2, 2,
+                                          3, 3, 3, 4, 4, 4, 5, 5, 5};
+  constexpr int kN18 = 30;
+  constexpr int kG18 = 30;
+
+  // --- Sanity: std::sort vs std::stable_sort differ on this tie set. ---
+  {
+    std::vector<int> unstable, stable;
+    for (int i = 0; i < kMoves; ++i) {
+      unstable.push_back(i);
+      stable.push_back(i);
+    }
+    std::sort(unstable.begin(), unstable.end(),
+              [](int, int) { return false; });  // all tie
+    std::stable_sort(stable.begin(), stable.end(),
+                     [](int, int) { return false; });
+    CHECK(unstable != stable,
+          "unstable parity: std::sort reorders 18 ties vs stable_sort");
+  }
+
+  struct S18 {
+    int pos = 0;
+    int prevFace = -1;
+    bool dead = false;
+  };
+  // Uniform deltas (+10 each): the goal (30) is exactly 3 moves away, so the
+  // blind constant-heuristic search terminates in a few thousand nodes
+  // (bounds 0..3) while every candidate set fully ties on (f, h) and the
+  // unstable std::sort permutation decides the descent order.
+  static constexpr int kDelta18[kMoves] = {10, 10, 10, 10, 10, 10, 10, 10, 10,
+                                           10, 10, 10, 10, 10, 10, 10, 10, 10};
+  auto apply18 = [](const S18& s, int move) -> S18 {
+    const int face = kFace18[move];
+    if (face == s.prevFace) return S18{s.pos, s.prevFace, true};
+    int p = s.pos + kDelta18[move];
+    if (p < 0) p = 0;
+    if (p > kN18) p = kN18;
+    return S18{p, face, false};
+  };
+  constexpr int kPrune18 = 1 << 25;
+  auto goal18 = [](const S18& s) { return !s.dead && s.pos == kG18; };
+  // Dead (same-face continuation) gets the huge prune heuristic so the
+  // parent f-filter excludes it, matching the baseline same-face skip.
+  // All LIVE candidates tie at h=0 (baseline sorts ties unstably).
+  auto heur18 = [](const S18& s) { return s.dead ? kPrune18 : 0; };
+
+  std::vector<int> allowed;
+  for (int i = 0; i < kMoves; ++i) allowed.push_back(i);
+
+  IdaSearcher<S18, decltype(apply18), decltype(goal18), decltype(heur18)>
+      shared(&allowed, apply18, goal18, heur18);
+  auto rs = shared.run(S18{0, -1, false}, 40);
+
+  // Hand-rolled replica of the baseline DFS (std::sort by (f, h)).
+  struct Baseline18 {
+    std::vector<int> path, solution;
+    bool found = false;
+    int bestExceed = 0;
+    std::uint64_t nodes = 0;
+    bool dfs(int pos, int prevFace, int g, int bound) {
+      if (found) return true;
+      if (pos == kG18) {
+        solution = path;
+        found = true;
+        return true;
+      }
+      ++nodes;
+      const int h = 0;  // constant heuristic
+      const int f = g + h;
+      if (f > bound) {
+        if (f < bestExceed) bestExceed = f;
+        return false;
+      }
+      struct Cand {
+        int h, f, mv, next;
+      };
+      std::array<Cand, 18> cands{};
+      int n = 0;
+      for (int mv = 0; mv < kMoves; ++mv) {
+        if (kFace18[mv] == prevFace) continue;
+        int next = pos + kDelta18[mv];
+        if (next < 0) next = 0;
+        if (next > kN18) next = kN18;
+        const int hh = 0;
+        const int ff = g + 1 + hh;
+        if (ff > bound) {
+          if (ff < bestExceed) bestExceed = ff;
+          continue;
+        }
+        cands[static_cast<std::size_t>(n)] = Cand{hh, ff, mv, next};
+        ++n;
+      }
+      std::sort(cands.begin(), cands.begin() + n,
+                [](const Cand& a, const Cand& b) {
+                  if (a.f != b.f) return a.f < b.f;
+                  return a.h < b.h;
+                });
+      for (int i = 0; i < n; ++i) {
+        const auto& c = cands[static_cast<std::size_t>(i)];
+        path.push_back(c.mv);
+        if (dfs(c.next, kFace18[c.mv], g + 1, bound)) return true;
+        path.pop_back();
+      }
+      return false;
+    }
+    bool run(int start, int maxDepth) {
+      if (start == kG18) {
+        solution.clear();
+        found = true;
+        return true;
+      }
+      int bound = 0;
+      while (true) {
+        if (bound > maxDepth) return false;
+        bestExceed = 2147483647;
+        path.clear();
+        found = false;
+        (void)dfs(start, -1, 0, bound);
+        if (found) return true;
+        if (bestExceed == 2147483647) return false;
+        bound = bestExceed;
+      }
+    }
+  };
+  Baseline18 base;
+  const bool ok = base.run(0, 40);
+
+  CHECK(rs.has_value() && ok, "unstable parity: both solve");
+  if (rs.has_value() && ok) {
+    CHECK(*rs == base.solution, "unstable parity: identical solution path");
+    std::cout << "unstable parity nodes shared=" << shared.nodes()
+              << " baseline=" << base.nodes << "\n";
+    CHECK(shared.nodes() == base.nodes,
+          "unstable parity: identical non-goal node count");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -424,9 +573,10 @@ int main() {
   testTimeout();
   testCancelled();
   testThreadEquivalence();
-  testStableOrderingWithThreads();
+  testSortOrderingWithThreads();
   testHeapFallbackOver32();
   testBaselineParity();
+  testBaselineUnstableSortParity18();
   if (g_failures == 0) {
     std::cout << "ALL TESTS PASSED\n";
     return 0;

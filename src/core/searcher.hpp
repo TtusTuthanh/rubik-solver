@@ -68,8 +68,8 @@ class IdaSearcher {
   // thread_count <= 1 (or unsupported) keeps the exact current
   // single-threaded path. For >1, only the root (g==0) candidate
   // evaluation is parallelised (heuristic+apply); the DFS order and the
-  // subsequent stable_sort are unchanged, so the first solution found is
-  // identical to single-threaded mode. Parallelism never touches shared
+  // subsequent baseline std::sort are unchanged, so the first solution
+  // found is identical to single-threaded mode. Parallelism never touches shared
   // mutable searcher state: workers only write disjoint slots of the
   // local candidate array, and `apply_`/`heuristic_` are invoked
   // concurrently as pure reads over immutable PDB/move tables.
@@ -147,7 +147,7 @@ class IdaSearcher {
         // Bounded root parallelism: partition candidate indices into
         // contiguous chunks; each worker writes only its chunk, evaluates
         // heuristic/apply over immutable tables. Ordering afterwards is a
-        // plain stable_sort, so the DFS order and returned solution are
+        // plain std::sort, so the DFS order and returned solution are
         // identical to the single-threaded path.
         const int nt = (std::min)(threadCount_, static_cast<int>(n));
         auto worker = [&](int t) {
@@ -185,9 +185,11 @@ class IdaSearcher {
     // f = g+1+h > bound are recorded in bestExceed_ here and excluded from
     // ordering/recursion. Dead continuations (huge heuristic) are covered
     // by the same f test, so they never expand. Compaction preserves
-    // allowed-list order among live candidates; stable_sort then keeps
-    // that order for ties (baseline std::sort is insertion-stable for
-    // the <=15 live candidates of production stages, so the two agree).
+    // allowed-list order among live candidates; std::sort by h (f is
+    // monotonic in h) then reproduces the exact baseline unstable sort
+    // on the same live-candidate sequence (baseline sorts by (f, h),
+    // which is the same comparator relation). No move-index tiebreak is
+    // applied: ties follow the baseline std::sort permutation.
     std::size_t m = 0;
     for (std::size_t i = 0; i < n; ++i) {
       const int ff = g + 1 + cands[i].h;
@@ -198,8 +200,8 @@ class IdaSearcher {
       if (m != i) cands[m] = cands[i];
       ++m;
     }
-    std::stable_sort(cands, cands + m,
-                     [](const Cand& a, const Cand& b) { return a.h < b.h; });
+    std::sort(cands, cands + m,
+              [](const Cand& a, const Cand& b) { return a.h < b.h; });
 
     for (std::size_t i = 0; i < m; ++i) {
       if (found_ || abortKind_ != kAbortNone) return found_;
