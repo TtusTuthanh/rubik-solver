@@ -739,52 +739,50 @@ bool isValidCubieState(const CubeState& s) {
 // ---------------------------------------------------------------------------
 enum class StageKind { FirstBlock, SecondBlock, Cmll, Lse };
 
-struct StageApply {
-  const MoveData* md = nullptr;
-  CubeState operator()(const CubeState& s, int moveIdx) const {
-    return fastApply(s, moveIdx, *md);
-  }
-};
-
-struct StageGoal {
-  StageKind kind = StageKind::FirstBlock;
-  bool operator()(const CubeState& s) const {
-    if (kind == StageKind::FirstBlock) return is_first_block_solved(s);
-    if (kind == StageKind::SecondBlock) return is_second_block_solved(s);
-    if (kind == StageKind::Cmll) return is_cmll_solved(s);
-    return is_lse_solved(s);
-  }
-};
-
-struct StageHeuristic {
-  StageKind kind = StageKind::FirstBlock;
-  const Pdbs* pdbs = nullptr;
-  int operator()(const CubeState& s) const {
-    int h = 0;
-    if (kind == StageKind::FirstBlock) {
-      h = (std::max)(h, pdbLookup(pdbs->fb, fbCornerIdx(s) * kEdge3Entries + fbEdgeIdx(s)));
-    } else if (kind == StageKind::SecondBlock) {
-      h = (std::max)(h, pdbLookup(pdbs->fb, fbCornerIdx(s) * kEdge3Entries + fbEdgeIdx(s)));
-      h = (std::max)(h, pdbLookup(pdbs->sb, sbCornerIdx(s) * kEdge3Entries + sbEdgeIdx(s)));
-    } else if (kind == StageKind::Cmll) {
-      h = (std::max)(h, pdbLookup(pdbs->fb, fbCornerIdx(s) * kEdge3Entries + fbEdgeIdx(s)));
-      h = (std::max)(h, pdbLookup(pdbs->sb, sbCornerIdx(s) * kEdge3Entries + sbEdgeIdx(s)));
-      h = (std::max)(h, pdbLookup(pdbs->cmll, cmllIdx(s)));
-    } else {
-      const int cRot = centreRotOf(s);
-      const int kRot = cornerRotOf(s);
-      if (cRot >= 0 && kRot >= 0) {
-        const std::uint32_t aidx =
-            ((lseEdgeIdx(s) * 4u + static_cast<std::uint32_t>(cRot)) * 4u +
-             static_cast<std::uint32_t>(kRot));
-        h = (std::max)(h, pdbLookup(pdbs->lse, aidx));
-      }
+int heuristicFor(StageKind kind, const Pdbs& pdbs, const CubeState& s) {
+  int h = 0;
+  if (kind == StageKind::FirstBlock) {
+    h = (std::max)(h, pdbLookup(pdbs.fb, fbCornerIdx(s) * kEdge3Entries + fbEdgeIdx(s)));
+  } else if (kind == StageKind::SecondBlock) {
+    h = (std::max)(h, pdbLookup(pdbs.fb, fbCornerIdx(s) * kEdge3Entries + fbEdgeIdx(s)));
+    h = (std::max)(h, pdbLookup(pdbs.sb, sbCornerIdx(s) * kEdge3Entries + sbEdgeIdx(s)));
+  } else if (kind == StageKind::Cmll) {
+    h = (std::max)(h, pdbLookup(pdbs.fb, fbCornerIdx(s) * kEdge3Entries + fbEdgeIdx(s)));
+    h = (std::max)(h, pdbLookup(pdbs.sb, sbCornerIdx(s) * kEdge3Entries + sbEdgeIdx(s)));
+    h = (std::max)(h, pdbLookup(pdbs.cmll, cmllIdx(s)));
+  } else {
+    const int cRot = centreRotOf(s);
+    const int kRot = cornerRotOf(s);
+    if (cRot >= 0 && kRot >= 0) {
+      const std::uint32_t aidx =
+          ((lseEdgeIdx(s) * 4u + static_cast<std::uint32_t>(cRot)) * 4u +
+           static_cast<std::uint32_t>(kRot));
+      h = (std::max)(h, pdbLookup(pdbs.lse, aidx));
     }
-    return h;
   }
+  return h;
+}
+
+bool stageGoal(StageKind kind, const CubeState& s) {
+  if (kind == StageKind::FirstBlock) return is_first_block_solved(s);
+  if (kind == StageKind::SecondBlock) return is_second_block_solved(s);
+  if (kind == StageKind::Cmll) return is_cmll_solved(s);
+  return is_lse_solved(s);
+}
+
+// Search state wraps the cube with the previously used face so the shared
+// searcher keeps the original same-face pruning (core::IdaSearcher has no
+// pruning hook). A same-face continuation is marked dead and given a huge
+// heuristic, so its f always exceeds the bound and the branch is pruned.
+// This is optimality-neutral: any path with two consecutive same-face moves
+// merges into a single move, so an optimal path never needs them.
+struct SearchState {
+  CubeState cube;
+  int prevFace = -1;
+  bool dead = false;
 };
 
-using RouxSearcher = IdaSearcher<CubeState, StageApply, StageGoal, StageHeuristic>;
+inline constexpr int kPruneHeuristic = 1 << 25;
 
 // Thin stage runner over the shared searcher. Keeps the historical Timeout
 // contract when the initial bound alone exceeds the stage limit (the shared
@@ -797,15 +795,27 @@ std::expected<std::vector<int>, SolveError> runStage(
     std::stop_token externalToken) {
   const MoveData& md = getMoveData();
   const Pdbs& pdbs = getPdbs();
-  if (StageGoal{kind}(start)) return std::vector<int>{};
-  const StageHeuristic heuristic{kind, &pdbs};
-  if (heuristic(start) > stageLimit) {
+  if (stageGoal(kind, start)) return std::vector<int>{};
+  if (heuristicFor(kind, pdbs, start) > stageLimit) {
     return std::unexpected(SolveError::Timeout);
   }
-  RouxSearcher searcher(&allowed, StageApply{&md}, StageGoal{kind}, heuristic);
+  auto apply = [&md](const SearchState& s, int move) {
+    const int face = md.faceGroup[static_cast<std::size_t>(move)];
+    if (face == s.prevFace) return SearchState{s.cube, s.prevFace, true};
+    return SearchState{fastApply(s.cube, move, md), face, false};
+  };
+  auto goal = [kind](const SearchState& s) {
+    return !s.dead && stageGoal(kind, s.cube);
+  };
+  auto heur = [&pdbs, kind](const SearchState& s) {
+    if (s.dead) return kPruneHeuristic;
+    return heuristicFor(kind, pdbs, s.cube);
+  };
+  core::IdaSearcher<SearchState, decltype(apply), decltype(goal), decltype(heur)>
+      searcher(&allowed, apply, goal, heur);
   if (hasDeadline) searcher.setDeadline(deadline);
   searcher.setStopToken(externalToken);
-  return searcher.run(start, stageLimit);
+  return searcher.run(SearchState{start, -1, false}, stageLimit);
 }
 
 std::vector<std::string> tokensFor(const std::vector<int>& idxs, const MoveData& md) {
