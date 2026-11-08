@@ -115,8 +115,13 @@ class IdaSearcher {
       S child = apply_(state, m);
       cands.push_back(Cand{m, child, heuristic_(child)});
     }
-    std::sort(cands.begin(), cands.end(),
-              [](const Cand& a, const Cand& b) { return a.h < b.h; });
+    // Stable ordering: ties keep the allowed-list (move-list) order, matching
+    // baseline hand-rolled DFS. std::sort is unstable, so equal-h children
+    // could be explored in implementation-defined order, causing
+    // tie-order variance regressions (e.g. roux with n=18 candidates vs zz
+    // n=9). stable_sort preserves input order deterministically.
+    std::stable_sort(cands.begin(), cands.end(),
+                     [](const Cand& a, const Cand& b) { return a.h < b.h; });
 
     for (const Cand& c : cands) {
       if (found_ || abortKind_ != kAbortNone) return found_;
