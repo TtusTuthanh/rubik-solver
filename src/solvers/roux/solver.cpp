@@ -13,8 +13,12 @@
 #include <vector>
 
 #include "core/moves.hpp"
+#include "core/pdb.hpp"
+#include "core/searcher.hpp"
 
 namespace rubik::roux {
+
+using core::pdbLookup;  // shared byte-table lookup (core/pdb.hpp)
 
 // ---------------------------------------------------------------------------
 // Corners 0..7, edges 0..11 as in core/cube.hpp.
@@ -695,11 +699,6 @@ const Pdbs& getPdbs() {
   return *gPdbs;
 }
 
-inline int pdbLookup(const std::vector<std::uint8_t>& db, std::uint32_t idx) {
-  const std::uint8_t v = db[idx];
-  return (v == 255u) ? 0 : static_cast<int>(v);
-}
-
 // ---------------------------------------------------------------------------
 // Validity (face moves keep centres fixed, so inputs must have them fixed).
 // ---------------------------------------------------------------------------
@@ -745,167 +744,117 @@ bool isValidCubieState(const CubeState& s) {
 }
 
 // ---------------------------------------------------------------------------
-// IDA* searcher. Heuristic = max of subproblem PDBs (admissible).
+// IDA* via the shared core::IdaSearcher. Heuristic = max of subproblem
+// PDBs (admissible). Per-stage differences are passed in, never baked in:
+// only the search control (DFS + ordering + bound raise + deadline/token)
+// is shared.
 // ---------------------------------------------------------------------------
 enum class StageKind { FirstBlock, SecondBlock, Cmll, Lse };
 
-struct Searcher {
-  StageKind kind = StageKind::FirstBlock;
-  const std::vector<int>* allowed = nullptr;
-  const Pdbs* pdbs = nullptr;
-  const MoveData* mv = nullptr;
-  int bestExceed = 0;
-  std::vector<int> path;
-  std::vector<int> solution;
-  bool found = false;
-  int abortKind = 0;  // 0 none, 1 timeout, 2 cancelled
-  std::uint64_t nodes = 0;
-  bool hasDeadline = false;
-  std::chrono::steady_clock::time_point deadline{};
-  std::stop_token externalToken{};
-
-  int heuristic(const CubeState& s) const {
-    int h = 0;
-    if (kind == StageKind::FirstBlock) {
-      h = (std::max)(h, pdbLookup(pdbs->fb, fbCornerIdx(s) * kEdge3Entries + fbEdgeIdx(s)));
-    } else if (kind == StageKind::SecondBlock) {
-      h = (std::max)(h, pdbLookup(pdbs->fb, fbCornerIdx(s) * kEdge3Entries + fbEdgeIdx(s)));
-      h = (std::max)(h, pdbLookup(pdbs->sb, sbCornerIdx(s) * kEdge3Entries + sbEdgeIdx(s)));
-    } else if (kind == StageKind::Cmll) {
-      h = (std::max)(h, pdbLookup(pdbs->fb, fbCornerIdx(s) * kEdge3Entries + fbEdgeIdx(s)));
-      h = (std::max)(h, pdbLookup(pdbs->sb, sbCornerIdx(s) * kEdge3Entries + sbEdgeIdx(s)));
-      h = (std::max)(h, pdbLookup(pdbs->cmll, cmllIdx(s)));
-    } else {
-      const int cRot = centreRotOf(s);
-      const int kRot = cornerRotOf(s);
-      if (cRot >= 0 && kRot >= 0) {
-        const std::uint32_t aidx =
-            ((lseEdgeIdx(s) * 4u + static_cast<std::uint32_t>(cRot)) * 4u +
-             static_cast<std::uint32_t>(kRot));
-        h = (std::max)(h, pdbLookup(pdbs->lse, aidx));
-      }
+// Heuristic = max of the stage's subproblem PDBs (admissible). Cumulative
+// max: FB=`fb`; SB=`fb+sb`; CMLL=`fb+sb+cmll`; LSE=`lse` with the
+// centreRotOf/cornerRotOf non-negative guard.
+int heuristicFor(StageKind kind, const Pdbs& pdbs, const CubeState& s) {
+  int h = 0;
+  if (kind == StageKind::FirstBlock) {
+    h = (std::max)(h, pdbLookup(pdbs.fb, fbCornerIdx(s) * kEdge3Entries + fbEdgeIdx(s)));
+  } else if (kind == StageKind::SecondBlock) {
+    h = (std::max)(h, pdbLookup(pdbs.fb, fbCornerIdx(s) * kEdge3Entries + fbEdgeIdx(s)));
+    h = (std::max)(h, pdbLookup(pdbs.sb, sbCornerIdx(s) * kEdge3Entries + sbEdgeIdx(s)));
+  } else if (kind == StageKind::Cmll) {
+    h = (std::max)(h, pdbLookup(pdbs.fb, fbCornerIdx(s) * kEdge3Entries + fbEdgeIdx(s)));
+    h = (std::max)(h, pdbLookup(pdbs.sb, sbCornerIdx(s) * kEdge3Entries + sbEdgeIdx(s)));
+    h = (std::max)(h, pdbLookup(pdbs.cmll, cmllIdx(s)));
+  } else {
+    const int cRot = centreRotOf(s);
+    const int kRot = cornerRotOf(s);
+    if (cRot >= 0 && kRot >= 0) {
+      const std::uint32_t aidx =
+          ((lseEdgeIdx(s) * 4u + static_cast<std::uint32_t>(cRot)) * 4u +
+           static_cast<std::uint32_t>(kRot));
+      h = (std::max)(h, pdbLookup(pdbs.lse, aidx));
     }
-    return h;
   }
+  return h;
+}
 
-  bool goal(const CubeState& s) const {
-    if (kind == StageKind::FirstBlock) return is_first_block_solved(s);
-    if (kind == StageKind::SecondBlock) return is_second_block_solved(s);
-    if (kind == StageKind::Cmll) return is_cmll_solved(s);
-    return is_lse_solved(s);
-  }
+bool stageGoal(StageKind kind, const CubeState& s) {
+  if (kind == StageKind::FirstBlock) return is_first_block_solved(s);
+  if (kind == StageKind::SecondBlock) return is_second_block_solved(s);
+  if (kind == StageKind::Cmll) return is_cmll_solved(s);
+  return is_lse_solved(s);
+}
 
-  bool dfs(const CubeState& cur, int g, int prevGroup, int bound) {
-    if (abortKind != 0) return true;
-    if (goal(cur)) {
-      solution = path;
-      found = true;
-      return true;
-    }
-    if (((++nodes) & 1023u) == 0u) {
-      if (externalToken.stop_requested()) {
-        abortKind = 2;
-        return true;
-      }
-      if (hasDeadline && std::chrono::steady_clock::now() >= deadline) {
-        abortKind = 1;
-        return true;
-      }
-    }
-    const int h = heuristic(cur);
-    const int f = g + h;
-    if (f > bound) {
-      if (f < bestExceed) bestExceed = f;
-      return false;
-    }
-    struct Cand {
-      int h = 0;
-      int f = 0;
-      int mvIdx = -1;
-      CubeState next;
-    };
-    std::array<Cand, 18> cands;
-    int n = 0;
-    for (int mvIdx : *allowed) {
-      const int group = mv->faceGroup[static_cast<std::size_t>(mvIdx)];
-      if (group == prevGroup) continue;
-      const CubeState next = fastApply(cur, mvIdx, *mv);
-      const int hh = heuristic(next);
-      const int ff = g + 1 + hh;
-      if (ff > bound) {
-        if (ff < bestExceed) bestExceed = ff;
-        continue;
-      }
-      Cand& c = cands[static_cast<std::size_t>(n)];
-      c.h = hh;
-      c.f = ff;
-      c.mvIdx = mvIdx;
-      c.next = next;
-      ++n;
-    }
-    std::sort(cands.begin(), cands.begin() + n,
-              [](const Cand& a, const Cand& b) {
-                if (a.f != b.f) return a.f < b.f;
-                return a.h < b.h;
-              });
-    for (int i = 0; i < n; ++i) {
-      const int mvIdx = cands[static_cast<std::size_t>(i)].mvIdx;
-      path.push_back(mvIdx);
-      if (dfs(cands[static_cast<std::size_t>(i)].next, g + 1,
-              mv->faceGroup[static_cast<std::size_t>(mvIdx)], bound)) {
-        return true;
-      }
-      path.pop_back();
-      if (abortKind != 0) return true;
-    }
-    return false;
-  }
+// Search state wraps the cube with the previously used face so the shared
+// searcher keeps the original same-face pruning (core::IdaSearcher has no
+// pruning hook). A same-face continuation is marked dead and given a huge
+// heuristic, so its f always exceeds the bound and the branch is pruned.
+// This is optimality-neutral: any path with two consecutive same-face moves
+// merges into a single move, so an optimal path never needs them.
+struct SearchState {
+  CubeState cube;
+  int prevFace = -1;
+  bool dead = false;
 };
 
-std::expected<std::vector<int>, SolveError> runIda(
+inline constexpr int kPruneHeuristic = 1 << 25;
+
+std::expected<std::vector<int>, SolveError> runStage(
     const CubeState& start, StageKind kind, const std::vector<int>& allowed,
     int stageLimit, bool hasDeadline,
     std::chrono::steady_clock::time_point deadline,
-    std::stop_token externalToken) {
+    std::stop_token externalToken, int threadCount = 1) {
   const MoveData& md = getMoveData();
   const Pdbs& pdbs = getPdbs();
-  Searcher searcher;
-  searcher.kind = kind;
-  searcher.allowed = &allowed;
-  searcher.pdbs = &pdbs;
-  searcher.mv = &md;
-  searcher.hasDeadline = hasDeadline;
-  searcher.deadline = deadline;
-  searcher.externalToken = externalToken;
-  if (searcher.goal(start)) return std::vector<int>{};
-  int bound = searcher.heuristic(start);
-  while (true) {
-    if (bound > stageLimit) return std::unexpected(SolveError::Timeout);
-    if (externalToken.stop_requested()) {
-      return std::unexpected(SolveError::Cancelled);
-    }
-    if (hasDeadline && std::chrono::steady_clock::now() >= deadline) {
-      return std::unexpected(SolveError::Timeout);
-    }
-    searcher.bestExceed = 2147483647;
-    searcher.path.clear();
-    searcher.found = false;
-    searcher.abortKind = 0;
-    (void)searcher.dfs(start, 0, -1, bound);
-    if (searcher.found) return searcher.solution;
-    if (searcher.abortKind == 2) return std::unexpected(SolveError::Cancelled);
-    if (searcher.abortKind == 1) return std::unexpected(SolveError::Timeout);
-    if (externalToken.stop_requested()) {
-      return std::unexpected(SolveError::Cancelled);
-    }
-    if (hasDeadline && std::chrono::steady_clock::now() >= deadline) {
-      return std::unexpected(SolveError::Timeout);
-    }
-    if (searcher.bestExceed == 2147483647) {
-      return std::unexpected(SolveError::Unsolvable);
-    }
-    bound = searcher.bestExceed;
+  if (stageGoal(kind, start)) {
+    return std::vector<int>{};
   }
+  // Mirror the old loop entry: heuristic above the per-stage bound fails
+  // with Timeout before any search.
+  if (heuristicFor(kind, pdbs, start) > stageLimit) {
+    return std::unexpected(SolveError::Timeout);
+  }
+  auto apply = [&md](const SearchState& s, int move) {
+    const int face = md.faceGroup[static_cast<std::size_t>(move)];
+    if (face == s.prevFace) return SearchState{s.cube, s.prevFace, true};
+    return SearchState{fastApply(s.cube, move, md), face, false};
+  };
+  auto goal = [kind](const SearchState& s) {
+    return !s.dead && stageGoal(kind, s.cube);
+  };
+  auto heur = [&pdbs, kind](const SearchState& s) {
+    if (s.dead) return kPruneHeuristic;
+    return heuristicFor(kind, pdbs, s.cube);
+  };
+  using SearcherT = core::IdaSearcher<SearchState, decltype(apply),
+                                      decltype(goal), decltype(heur)>;
+  SearcherT searcher(&allowed, apply, goal, heur);
+  searcher.setThreadCount(threadCount);
+  if (hasDeadline) searcher.setDeadline(deadline);
+  searcher.setStopToken(externalToken);
+  const SearchState root{start, -1, false};
+  auto result = searcher.run(root, stageLimit);
+  if (result) return result;
+  if (result.error() == SolveError::Timeout ||
+      result.error() == SolveError::Cancelled) {
+    return result;
+  }
+  // The shared searcher reports Unsolvable both for genuinely unreachable
+  // goals and for "optimal depth exceeds stageLimit". Roux semantics map
+  // the latter to Timeout, so distinguish with a capped probe run.
+  SearcherT probe(&allowed, apply, goal, heur);
+  probe.setThreadCount(threadCount);
+  if (hasDeadline) probe.setDeadline(deadline);
+  probe.setStopToken(externalToken);
+  auto probeResult = probe.run(root, 40);
+  if (probeResult) {
+    return std::unexpected(SolveError::Timeout);
+  }
+  if (probeResult.error() == SolveError::Timeout ||
+      probeResult.error() == SolveError::Cancelled) {
+    return probeResult;
+  }
+  return std::unexpected(SolveError::Unsolvable);
 }
 
 std::vector<std::string> tokensFor(const std::vector<int>& idxs, const MoveData& md) {
@@ -963,8 +912,9 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
 
   // Stage 1: first block.
   {
-    auto r = runIda(cur, StageKind::FirstBlock, faceIdx, stageLimit, hasDeadline,
-                    deadline, options.stop_token);
+    auto r = runStage(cur, StageKind::FirstBlock, faceIdx, stageLimit,
+                      hasDeadline, deadline, options.stop_token,
+                      options.thread_count);
     if (!r) return std::unexpected(r.error());
     const std::vector<int> idxs = *r;
     const std::vector<std::string> toks = tokensFor(idxs, md);
@@ -980,8 +930,9 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
   }
   // Stage 2: second block.
   {
-    auto r = runIda(cur, StageKind::SecondBlock, faceIdx, stageLimit, hasDeadline,
-                    deadline, options.stop_token);
+    auto r = runStage(cur, StageKind::SecondBlock, faceIdx, stageLimit,
+                      hasDeadline, deadline, options.stop_token,
+                      options.thread_count);
     if (!r) return std::unexpected(r.error());
     const std::vector<int> idxs = *r;
     const std::vector<std::string> toks = tokensFor(idxs, md);
@@ -997,8 +948,8 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
   }
   // Stage 3: CMLL.
   {
-    auto r = runIda(cur, StageKind::Cmll, faceIdx, stageLimit, hasDeadline,
-                    deadline, options.stop_token);
+    auto r = runStage(cur, StageKind::Cmll, faceIdx, stageLimit, hasDeadline,
+                      deadline, options.stop_token, options.thread_count);
     if (!r) return std::unexpected(r.error());
     const std::vector<int> idxs = *r;
     const std::vector<std::string> toks = tokensFor(idxs, md);
@@ -1014,8 +965,8 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
   }
   // Stage 4: LSE (M and U moves only).
   {
-    auto r = runIda(cur, StageKind::Lse, lseIdx, stageLimit, hasDeadline,
-                    deadline, options.stop_token);
+    auto r = runStage(cur, StageKind::Lse, lseIdx, stageLimit, hasDeadline,
+                      deadline, options.stop_token, options.thread_count);
     if (!r) return std::unexpected(r.error());
     const std::vector<int> idxs = *r;
     const std::vector<std::string> toks = tokensFor(idxs, md);
