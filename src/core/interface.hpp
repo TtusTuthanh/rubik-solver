@@ -37,7 +37,7 @@ enum class SolveError {
   NotImplemented,
 };
 
-enum class Method { Cfop, Roux, Zz, Heise, Optimal };
+enum class Method { Cfop, Roux, Zz, Heise };
 
 // Registry: method name -> solver. Each solver provides
 //   std::expected<Solution, SolveError> solve(const CubeState&, const SolveOptions&)
