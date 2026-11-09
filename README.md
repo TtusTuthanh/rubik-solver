@@ -75,7 +75,7 @@ Step-through cube net (`U` on top, `L F R B` middle, `D` bottom, URFDLB order) w
 
 ## External tables (`tables\`, gitignored)
 
-Supplied pattern tables (James Cameron solver, licence **unknown** — see `docs/tables.md` for SHA-256 manifest + format). `twophase` (phase1→G1→phase2) uses the `tables\` HTM set; a missing or truncated `tables\` set falls back to an h=0 search with a clear message. Default discovery (also in `--help`): explicit `--tables-dir` / `--data-dir` / env > `./tables/` > `build/tables/` > `<executable-dir>/tables/` + `<executable-dir>/../tables/` > legacy `../tables`, `tables`. (Pre-removal, a tables-assisted benchmark over 500 scrambles is recorded in `benchmarks/tables_bench.txt`; full BFS ≤6 checks are in `tests/tables/`.)
+Supplied pattern tables (James Cameron solver (https://jamescameron.me/rubiks-cube-solver/tables), licence **unknown** — see `docs/tables.md` for SHA-256 manifest + format). `twophase` (phase1→G1→phase2) uses the `tables\` HTM set; a missing or truncated `tables\` set falls back to an h=0 search with a clear message. Default discovery (also in `--help`): explicit `--tables-dir` / `--data-dir` / env > `./tables/` > `build/tables/` > `<executable-dir>/tables/` + `<executable-dir>/../tables/` > legacy `../tables`, `tables`. (Pre-removal, a tables-assisted benchmark over 500 scrambles is recorded in `benchmarks/tables_bench.txt`; full BFS ≤6 checks are in `tests/tables/`.)
 
 ## Docs
 
