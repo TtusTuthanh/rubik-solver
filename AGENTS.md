@@ -1,6 +1,6 @@
 # rubik-solver
 
-C++23 Rubik's cube solver (cfop, roux, zz, heise, optimal). See `docs/SPEC.md`.
+C++23 Rubik's cube solver (cfop, roux, zz, heise, twophase). See `docs/SPEC.md`.
 
 ## Agent skills
 

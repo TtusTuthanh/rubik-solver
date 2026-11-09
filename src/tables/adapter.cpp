@@ -30,6 +30,13 @@ TablesAdapter& TablesAdapter::operator=(TablesAdapter&& other) noexcept {
 }
 
 namespace {
+// Cached spec indices resolved once (no per-call filename scans).
+const int kPhase1SymIdx = TableLoader::index_of("kociembaPhase1Symmetry");
+const std::array<int, 4> kHeurIdx = {TableLoader::index_of("cornerHeuristicHTM"),
+                                     TableLoader::index_of("edgePermutationHeuristicHTM"),
+                                     TableLoader::index_of("kociembaPhase1HeuristicHTM"),
+                                     TableLoader::index_of("kociembaPhase2HeuristicHTM")};
+
 std::string corner_h_name_local(Metric m) {
   return "cornerHeuristic" + std::string(metric_suffix(m));
 }
@@ -45,9 +52,24 @@ std::string phase1_large_h_name_local(Metric m) {
 std::string phase2_h_name_local(Metric m) {
   return "kociembaPhase2Heuristic" + std::string(metric_suffix(m));
 }
+// Metric -> spec index for the heuristic tables (HTM fast path only).
+inline int heur_index_for(Metric m, int kind) noexcept {
+  if (m == Metric::HTM) return kHeurIdx[static_cast<std::size_t>(kind)];
+  return -1;
+}
 }  // namespace
 
 int TablesAdapter::h_corner(const CubeState& state, Metric metric) const noexcept {
+  if (metric == Metric::HTM) {
+    const int idx = kHeurIdx[0];
+    if (!loader_.is_loaded_indexed(static_cast<std::size_t>(idx))) {
+      const_cast<TableLoader&>(loader_).load_indexed(static_cast<std::size_t>(idx),
+                                                     verify_hashes_);
+    }
+    const std::uint8_t* base = loader_.view_indexed(static_cast<std::size_t>(idx));
+    if (base == nullptr) return 0;
+    return nibble_heuristic(base, upstream_corner_index(state), kCornerEntries);
+  }
   if (!loader_.is_loaded(corner_h_name_local(metric))) {
     const_cast<TableLoader&>(loader_).load(corner_h_name_local(metric),
                                            verify_hashes_);
@@ -59,6 +81,16 @@ int TablesAdapter::h_corner(const CubeState& state, Metric metric) const noexcep
 }
 
 int TablesAdapter::h_edge_perm(const CubeState& state, Metric metric) const noexcept {
+  if (metric == Metric::HTM) {
+    const int idx = kHeurIdx[1];
+    if (!loader_.is_loaded_indexed(static_cast<std::size_t>(idx))) {
+      const_cast<TableLoader&>(loader_).load_indexed(static_cast<std::size_t>(idx),
+                                                     verify_hashes_);
+    }
+    const std::uint8_t* base = loader_.view_indexed(static_cast<std::size_t>(idx));
+    if (base == nullptr) return 0;
+    return nibble_heuristic(base, upstream_edge_perm_index(state), kEdgePermEntries);
+  }
   if (!loader_.is_loaded(edge_h_name_local(metric))) {
     const_cast<TableLoader&>(loader_).load(edge_h_name_local(metric),
                                            verify_hashes_);
@@ -70,6 +102,30 @@ int TablesAdapter::h_edge_perm(const CubeState& state, Metric metric) const noex
 }
 
 int TablesAdapter::h_phase1(const CubeState& state, Metric metric) const noexcept {
+  if (metric == Metric::HTM) {
+    const int hi = kHeurIdx[2];
+    if (!loader_.is_loaded_indexed(static_cast<std::size_t>(kPhase1SymIdx))) {
+      const_cast<TableLoader&>(loader_).load_indexed(
+          static_cast<std::size_t>(kPhase1SymIdx), verify_hashes_);
+    }
+    if (!loader_.is_loaded_indexed(static_cast<std::size_t>(hi))) {
+      const_cast<TableLoader&>(loader_).load_indexed(static_cast<std::size_t>(hi),
+                                                     verify_hashes_);
+    }
+    const std::uint8_t* base = loader_.view_indexed(static_cast<std::size_t>(hi));
+    if (base == nullptr || loader_.phase1_symmetry_base() == nullptr) {
+      return 0;
+    }
+    Phase1Coords c;
+    upstream_phase1_coords(state, c);
+    const std::uint32_t sym = loader_.phase1_min_orientation(c.comb495);
+    const std::uint32_t mid_sym = loader_.phase1_middle_sym(c.middle, sym);
+    const std::uint32_t class45 = loader_.phase1_equiv_class(mid_sym);
+    const std::uint32_t flip_sym = loader_.phase1_edge_sym(c.flip, c.comb495, sym);
+    const std::uint32_t twist_sym = loader_.phase1_corner_sym(c.twist, sym);
+    const std::uint64_t idx = phase1_reduced_index(class45, flip_sym, twist_sym);
+    return nibble_heuristic(base, idx, kPhase1ReducedEntries);
+  }
   if (!loader_.is_loaded("kociembaPhase1Symmetry")) {
     const_cast<TableLoader&>(loader_).load("kociembaPhase1Symmetry",
                                            verify_hashes_);
@@ -83,15 +139,13 @@ int TablesAdapter::h_phase1(const CubeState& state, Metric metric) const noexcep
   if (base == nullptr || loader_.phase1_symmetry_base() == nullptr) {
     return 0;
   }
-  const std::uint32_t twist = upstream_twist(state);
-  const std::uint32_t flip = upstream_flip(state);
-  const std::uint32_t comb = upstream_comb495(state);
-  const std::uint32_t middle = upstream_middle_layer(state);
-  const std::uint32_t sym = loader_.phase1_min_orientation(comb);
-  const std::uint32_t mid_sym = loader_.phase1_middle_sym(middle, sym);
+  Phase1Coords c;
+  upstream_phase1_coords(state, c);
+  const std::uint32_t sym = loader_.phase1_min_orientation(c.comb495);
+  const std::uint32_t mid_sym = loader_.phase1_middle_sym(c.middle, sym);
   const std::uint32_t class45 = loader_.phase1_equiv_class(mid_sym);
-  const std::uint32_t flip_sym = loader_.phase1_edge_sym(flip, comb, sym);
-  const std::uint32_t twist_sym = loader_.phase1_corner_sym(twist, sym);
+  const std::uint32_t flip_sym = loader_.phase1_edge_sym(c.flip, c.comb495, sym);
+  const std::uint32_t twist_sym = loader_.phase1_corner_sym(c.twist, sym);
   const std::uint64_t idx = phase1_reduced_index(class45, flip_sym, twist_sym);
   return nibble_heuristic(base, idx, kPhase1ReducedEntries);
 }
@@ -110,15 +164,13 @@ int TablesAdapter::h_phase1_large(const CubeState& state, Metric metric) const n
   if (base == nullptr || loader_.phase1_symmetry_base() == nullptr) {
     return 0;
   }
-  const std::uint32_t twist = upstream_twist(state);
-  const std::uint32_t flip = upstream_flip(state);
-  const std::uint32_t comb = upstream_comb495(state);
-  const std::uint32_t middle = upstream_middle_layer(state);
-  const std::uint32_t sym = loader_.phase1_min_orientation(comb);
-  const std::uint32_t mid_sym = loader_.phase1_middle_sym(middle, sym);
+  Phase1Coords c;
+  upstream_phase1_coords(state, c);
+  const std::uint32_t sym = loader_.phase1_min_orientation(c.comb495);
+  const std::uint32_t mid_sym = loader_.phase1_middle_sym(c.middle, sym);
   const std::uint32_t class45 = loader_.phase1_equiv_class(mid_sym);
-  const std::uint32_t flip_sym = loader_.phase1_edge_sym(flip, comb, sym);
-  const std::uint32_t twist_sym = loader_.phase1_corner_sym(twist, sym);
+  const std::uint32_t flip_sym = loader_.phase1_edge_sym(c.flip, c.comb495, sym);
+  const std::uint32_t twist_sym = loader_.phase1_corner_sym(c.twist, sym);
   const std::uint64_t idx =
       phase1_large_index(class45, flip_sym, twist_sym, mid_sym);
   return nibble_heuristic(base, idx, kPhase1LargeEntries);
@@ -128,6 +180,17 @@ int TablesAdapter::h_phase2_from_coords(std::uint32_t class2768,
                                         std::uint32_t ud_perm,
                                         std::uint32_t slice_perm,
                                         Metric metric) const noexcept {
+  if (metric == Metric::HTM) {
+    const int hi = kHeurIdx[3];
+    if (!loader_.is_loaded_indexed(static_cast<std::size_t>(hi))) {
+      const_cast<TableLoader&>(loader_).load_indexed(static_cast<std::size_t>(hi),
+                                                     verify_hashes_);
+    }
+    const std::uint8_t* base = loader_.view_indexed(static_cast<std::size_t>(hi));
+    if (base == nullptr) return 0;
+    const std::uint64_t idx = phase2_index(class2768, ud_perm, slice_perm);
+    return two_bit_heuristic(base, idx, kPhase2Entries);
+  }
   if (!loader_.is_loaded(phase2_h_name_local(metric))) {
     const_cast<TableLoader&>(loader_).load(phase2_h_name_local(metric),
                                            verify_hashes_);
@@ -259,7 +322,7 @@ int run_self_test(const std::filesystem::path& dir, bool verify_hashes) {
     return 0;
   }
   std::cout
-      << "tables\\ invalid/missing: falling back to data\\ DBs (optimal PDBs)\n";
+      << "tables\\ invalid/missing: falling back to data\\ DBs\n";
   std::cout << "tables self-test: PASS (fallback verdict, not a crash)\n";
   return 1;
 }

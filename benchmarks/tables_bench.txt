@@ -1,4 +1,4 @@
-rubik-solver tables benchmark (optimal, SAME scrambles)
+rubik-solver tables benchmark (SAME scrambles)
 seed=888002 count=500 depth=uniform 1..11
 data_dir=H:/rubik-solver/data
 tables_dir_with=H:/rubik-solver/tables

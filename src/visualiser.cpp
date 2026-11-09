@@ -19,7 +19,6 @@
 #include "core/validation.hpp"
 #include "solvers/cfop/solver.hpp"
 #include "solvers/heise/solver.hpp"
-#include "solvers/optimal/solver.hpp"
 #include "solvers/roux/solver.hpp"
 #include "solvers/twophase/solver.hpp"
 #include "solvers/zz/solver.hpp"
@@ -94,8 +93,6 @@ bool stage_predicate(const std::string& method, const std::string& stage, const 
     if (stage == "f2l_minus_1") return rubik::heise::is_f2l_minus_1_solved(s);
     if (stage == "corner_edge_pairs") return rubik::heise::is_corner_edge_pairs_solved(s);
     if (stage == "final_corners") return rubik::heise::is_final_corners_solved(s);
-  } else if (method == "optimal") {
-    return rubik::is_solved(s);
   } else if (method == "twophase") {
     if (stage == "phase1") return rubik::twophase::is_phase1_solved(s);
     if (stage == "phase2") return rubik::twophase::is_phase2_solved(s);
@@ -104,7 +101,7 @@ bool stage_predicate(const std::string& method, const std::string& stage, const 
 }
 
 void print_help() {
-  std::cout << "Usage: rubik-visualiser --method <cfop|roux|zz|heise|optimal|twophase> [--scramble \"R U\"] [--facelets <54>] [--random-depth N] [--seed N] [--data-dir DIR] [--tables-dir DIR] [--timeout-ms N] [--auto]\n";
+  std::cout << "Usage: rubik-visualiser --method <cfop|roux|zz|heise|twophase> [--scramble \"R U\"] [--facelets <54>] [--random-depth N] [--seed N] [--data-dir DIR] [--tables-dir DIR] [--timeout-ms N] [--auto]\n";
   std::cout << "  --auto: print all stages without waiting for keys (for tests/scripts).\n";
   std::cout << "Keys: n = next stage, p = previous stage, q = quit.\n";
 }
@@ -154,17 +151,16 @@ int main(int argc, char* argv[]) {
   using rubik::SolverFn;
   std::map<std::string, SolverFn> registry{
     {"cfop", &rubik::cfop::solve}, {"roux", &rubik::roux::solve}, {"zz", &rubik::zz::solve},
-    {"heise", &rubik::heise::solve}, {"optimal", &rubik::optimal::solve},
+    {"heise", &rubik::heise::solve},
     {"twophase", &rubik::twophase::solve},
   };
   auto it = registry.find(args.method);
   if (it == registry.end()) { std::cerr << "unknown method\n"; return 2; }
-  if (!args.data_dir.empty()) rubik::optimal::set_data_dir(args.data_dir);
+  (void)args.data_dir;  // legacy flag retained for compatibility
   if (args.tables_dir.empty()) {
     args.tables_dir = rubik::tables::default_tables_dir().string();
   }
   rubik::tables::set_tables_dir(args.tables_dir);
-  rubik::optimal::set_tables_dir(args.tables_dir);
 
   CubeState state = CubeState::solved();
   std::vector<std::string> scramble_tokens;
@@ -190,7 +186,7 @@ int main(int argc, char* argv[]) {
 
   SolveOptions opts;
   opts.timeout_ms = args.timeout_ms;
-  opts.max_depth = (args.method == "optimal") ? 20 : 30;
+  opts.max_depth = 30;
   opts.thread_count = 4;
   auto t0 = std::chrono::steady_clock::now();
   auto result = it->second(state, opts);

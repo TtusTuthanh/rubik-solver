@@ -1,7 +1,7 @@
 #pragma once
-// Adapter: plugs tables\ heuristics into optimal's max() heuristic
-// WITHOUT changing the frozen solve() interface (docs/tables.md
-// Section 4 + Section 7). The integrator (optimal solver) calls
+// Adapter: plugs tables\ heuristics into the frozen HTM max()
+// heuristic WITHOUT changing the frozen solve() interface
+// (docs/tables.md Section 4 + Section 7). The integrator calls
 // combined_h(state, base_h) per node inside its existing
 // heuristic_raw(); frozen signatures and SolveOptions are untouched.
 //
@@ -72,7 +72,7 @@ class TablesAdapter {
   int h_phase2_from_coords(std::uint32_t class2768, std::uint32_t ud_perm,
                            std::uint32_t slice_perm, Metric metric = Metric::HTM) const noexcept;
 
-  // max() combinator for the frozen optimal solver: max of base_h
+  // max() combinator for the frozen HTM solver: max of base_h
   // (four data\ PDBs) with tables\ cornerHTM + edgePermHTM +
   // phase1HTM. Pass metric=HTM (default). Non-HTM metrics are
   // documented inadmissible for HTM distance and only included when

@@ -2,14 +2,13 @@
 // tables\ integration (writable-area only; no frozen-interface changes).
 // Subcommands:
 //   admissibility [seed]          BFS to depth <=6, h <= true distance
-//   entrycompare [N] [seed]       1M random states: tables vs data\ DBs
 //   parity [N] [seed]             500 scrambles depth <=11: length parity +
-//                                 before/after benchmark (writes bench.txt)
+//                                 with/without-tables benchmark (bench.txt)
 //   fallback                      missing/truncated fallback (in-process)
 //   selftest                      encoders sanity (solved maps to 0)
 //
-// All table accesses go through public APIs (optimal::solve,
-// optimal::load_pdb_file, TablesAdapter, TableLoader, upstream_* encoders).
+// All table accesses go through public APIs (twophase::solve,
+// TablesAdapter, TableLoader, upstream_* encoders).
 // BFS expansion uses fast_apply derived from the frozen core
 // (apply(solved, move) once), cross-checked against rubik::apply and the
 // independent refsim (tests/core/reference_sim.hpp).
@@ -30,7 +29,7 @@
 #include "core/cube.hpp"
 #include "core/moves.hpp"
 #include "core/reference_sim.hpp"
-#include "solvers/optimal/solver.hpp"
+#include "solvers/twophase/solver.hpp"
 #include "tables/adapter.hpp"
 #include "tables/tables_loader.hpp"
 
@@ -38,7 +37,6 @@ namespace fs = std::filesystem;
 using rubik::CubeState;
 using rubik::Move;
 
-static const std::string kDataDir = "H:/rubik-solver/data";
 static const std::string kTablesDir = "H:/rubik-solver/tables";
 static const std::string kBenchFile =
     "H:/rubik-solver/tests/tables/bench.txt";
@@ -472,152 +470,6 @@ static int cmd_admissibility(unsigned seed) {
   return ok ? 0 : 1;
 }
 
-// entrycompare: N random states; tables vs data\ DBs at equivalent states.
-static int cmd_entrycompare(int n, unsigned seed) {
-  const auto t0 = std::chrono::steady_clock::now();
-  auto cdb = rubik::optimal::load_pdb_file(
-      fs::path(kDataDir) / rubik::optimal::kCornerFileName,
-      rubik::optimal::kPdbIdCorner, rubik::optimal::kCornerEntries);
-  if (!cdb) {
-    std::cout << "entrycompare: cannot load corner.db\n";
-    return 1;
-  }
-  std::array<std::vector<std::uint8_t>, 3> edbs;
-  const char* efiles[3] = {rubik::optimal::kEdge1FileName,
-                           rubik::optimal::kEdge2FileName,
-                           rubik::optimal::kEdge3FileName};
-  std::uint32_t eids[3] = {rubik::optimal::kPdbIdEdge1,
-                           rubik::optimal::kPdbIdEdge2,
-                           rubik::optimal::kPdbIdEdge3};
-  for (int p = 0; p < 3; ++p) {
-    auto e = rubik::optimal::load_pdb_file(
-        fs::path(kDataDir) / efiles[p], eids[p], rubik::optimal::kEdgeEntries);
-    if (!e) {
-      std::cout << "entrycompare: cannot load " << efiles[p] << "\n";
-      return 1;
-    }
-    edbs[static_cast<std::size_t>(p)] = std::move(*e);
-  }
-  rubik::tables::TablesAdapter ad(fs::path(kTablesDir), false);
-  (void)ad.h_corner(CubeState::solved());
-  (void)ad.h_edge_perm(CubeState::solved());
-  (void)ad.h_phase1(CubeState::solved());
-  const std::uint8_t* cornerBase = ad.loader().view("cornerHeuristicHTM");
-  const std::uint8_t* edgeBase =
-      ad.loader().view("edgePermutationHeuristicHTM");
-  if (cornerBase == nullptr || edgeBase == nullptr) {
-    std::cout << "entrycompare: tables views missing\n";
-    return 1;
-  }
-  const std::vector<TestMove> moves = build_test_moves();
-  std::mt19937 rng(seed);
-  std::uniform_int_distribution<int> depthDist(0, 20);
-  std::uint64_t cEqual = 0, cSentinelMatch = 0, cDiffer = 0;
-  std::uint64_t cSentinelData = 0, cSentinelTables = 0;
-  int cMaxDiff = 0;
-  std::string cExamples;
-  std::uint64_t domP[3] = {0, 0, 0}, shortP[3] = {0, 0, 0};
-  std::uint64_t eSentinel = 0;
-  int eMaxShortfall = 0;
-  std::uint64_t p1Nonzero = 0, p1Sentinel0 = 0;
-  int p1Max = 0;
-  std::array<std::uint64_t, 16> p1Hist{};
-  p1Hist.fill(0);
-  std::uint64_t fast_mismatch = 0;
-  for (int i = 0; i < n; ++i) {
-    const int dscr = depthDist(rng);
-    const std::vector<std::string> toks = random_tokens(rng, dscr);
-    CubeState st = CubeState::solved();
-    for (const auto& t : toks) {
-      static const std::vector<Move> all = rubik::all_face_moves();
-      for (std::size_t k = 0; k < all.size(); ++k) {
-        if (all[k].token == t) {
-          st = fast_apply(st, moves[k]);
-          break;
-        }
-      }
-    }
-    if (i < 1000) {
-      // spot-validate fast_apply vs core apply
-      const CubeState core = scramble_state_core(toks);
-      if (st != core) ++fast_mismatch;
-    }
-    const std::uint8_t dC = rubik::optimal::pdb_get(
-        *cdb, rubik::optimal::corner_index(st));
-    const std::uint64_t ci = rubik::tables::upstream_corner_index(st);
-    const std::uint8_t tC = rubik::tables::nibble_get(cornerBase, ci);
-    if (dC == 0xFu) ++cSentinelData;
-    if (tC == 0xFu) ++cSentinelTables;
-    if (dC == 0xFu && tC == 0xFu) {
-      ++cSentinelMatch;
-    } else if (dC == tC) {
-      ++cEqual;
-    } else {
-      ++cDiffer;
-      const int diff =
-          std::abs(static_cast<int>(dC) - static_cast<int>(tC));
-      if (diff > cMaxDiff) cMaxDiff = diff;
-      if (cDiffer <= 5) {
-        cExamples += "  state" + std::to_string(i) + " dC=" +
-                     std::to_string(static_cast<int>(dC)) + " tC=" +
-                     std::to_string(static_cast<int>(tC)) +
-                     " scramble=\"" + join_tokens(toks) + "\"\n";
-      }
-    }
-    const std::uint64_t ei = rubik::tables::upstream_edge_perm_index(st);
-    const std::uint8_t tE = rubik::tables::nibble_get(edgeBase, ei);
-    if (tE == 0xFu) ++eSentinel;
-    for (int p = 0; p < 3; ++p) {
-      const std::uint8_t dE = rubik::optimal::pdb_get(
-          edbs[static_cast<std::size_t>(p)],
-          rubik::optimal::edge_index(st, p));
-      const bool dominates = (tE == 0xFu) ||
-                             (dE != 0xFu && static_cast<int>(tE) >=
-                                                static_cast<int>(dE));
-      if (dominates) {
-        ++domP[static_cast<std::size_t>(p)];
-      } else {
-        ++shortP[static_cast<std::size_t>(p)];
-        const int sf =
-            static_cast<int>(dE) - static_cast<int>(tE);
-        if (sf > eMaxShortfall) eMaxShortfall = sf;
-      }
-    }
-    const int hp = ad.h_phase1(st);
-    if (hp != 0) ++p1Nonzero;
-    if (hp == 0) ++p1Sentinel0;
-    if (hp > p1Max) p1Max = hp;
-    if (hp >= 0 && hp < 16)
-      ++p1Hist[static_cast<std::size_t>(hp)];
-  }
-  const auto t1 = std::chrono::steady_clock::now();
-  std::cout << "entrycompare N=" << n << " seed=" << seed
-            << " seconds=" << std::chrono::duration<double>(t1 - t0).count()
-            << " fast_mismatches(in first 1000)=" << fast_mismatch << "\n";
-  std::cout << "entrycompare corner: equal=" << cEqual
-            << " sentinel_match=" << cSentinelMatch
-            << " differ=" << cDiffer << " maxAbsDiff=" << cMaxDiff
-            << " sentinelData=" << cSentinelData
-            << " sentinelTables=" << cSentinelTables << "\n";
-  if (!cExamples.empty()) std::cout << "entrycompare corner examples:\n"
-                                    << cExamples;
-  std::cout << "entrycompare edgePerm vs data edges: sentinelTables="
-            << eSentinel << " maxShortfall=" << eMaxShortfall << "\n";
-  for (int p = 0; p < 3; ++p) {
-    std::cout << "  pdb" << p << " dominates=" << domP[p]
-              << " short=" << shortP[p] << "\n";
-  }
-  std::cout << "entrycompare phase1: nonzero=" << p1Nonzero
-            << " zero=" << p1Sentinel0 << " max=" << p1Max << " hist=[";
-  for (int v = 0; v < 16; ++v) {
-    if (p1Hist[static_cast<std::size_t>(v)] > 0) {
-      std::cout << v << ":" << p1Hist[static_cast<std::size_t>(v)] << " ";
-    }
-  }
-  std::cout << "]\n";
-  std::cout << "entrycompare: done\n";
-  return 0;
-}
 
 // parity + benchmark: same scrambles, tables vs without.
 static int cmd_parity(int n, unsigned seed) {
@@ -646,23 +498,22 @@ static int cmd_parity(int n, unsigned seed) {
   };
   std::vector<Result> resWith(static_cast<std::size_t>(n));
   std::vector<Result> resWithout(static_cast<std::size_t>(n));
-  auto run_pass = [&](const fs::path& tablesDir, const fs::path& dataDir,
-                      const char* label, std::vector<Result>& out) {
-    rubik::optimal::set_data_dir(dataDir);
-    rubik::optimal::set_tables_dir(tablesDir);
+  auto run_pass = [&](const fs::path& tablesDir, const char* label,
+                      std::vector<Result>& out) {
+    rubik::tables::set_tables_dir(tablesDir);
     rubik::SolveOptions opts;
     opts.timeout_ms = 60000;
-    opts.max_depth = 20;
+    opts.max_depth = 30;
     opts.thread_count = 4;
     // warmup (untimed, excluded)
     const std::vector<std::string> warm = scrambles[0];
-    auto w = rubik::optimal::solve(scramble_state_fast(warm, moves), opts);
+    auto w = rubik::twophase::solve(scramble_state_fast(warm, moves), opts);
     (void)w;
     for (int i = 0; i < n; ++i) {
       const auto& toks = scrambles[static_cast<std::size_t>(i)];
       const CubeState st = scramble_state_fast(toks, moves);
       const auto s0 = std::chrono::steady_clock::now();
-      auto r = rubik::optimal::solve(st, opts);
+      auto r = rubik::twophase::solve(st, opts);
       const auto s1 = std::chrono::steady_clock::now();
       Result rec;
       rec.ms = std::chrono::duration<double, std::milli>(s1 - s0).count();
@@ -681,9 +532,9 @@ static int cmd_parity(int n, unsigned seed) {
       }
     }
   };
-  run_pass(fs::path(kTablesDir), fs::path(kDataDir), "WITH", resWith);
+  run_pass(fs::path(kTablesDir), "WITH", resWith);
   run_pass(fs::path("H:/rubik-solver/tests/tables/missing_dir_xxx"),
-           fs::path(kDataDir), "WITHOUT", resWithout);
+           "WITHOUT", resWithout);
   // parity checks
   int both_ok = 0, len_mismatch = 0, verify_fail = 0, overDepth = 0;
   for (int i = 0; i < n; ++i) {
@@ -731,11 +582,10 @@ static int cmd_parity(int n, unsigned seed) {
   // bench.txt (measured numbers only)
   {
     std::ofstream out(kBenchFile);
-    out << "rubik-solver tables benchmark (optimal, SAME scrambles)\n";
+    out << "rubik-solver tables benchmark (twophase, SAME scrambles)\n";
     out << "seed=" << seed << " count=" << n << " depth=uniform 1..11\n";
-    out << "data_dir=" << kDataDir << "\n";
     out << "tables_dir_with=" << kTablesDir << "\n";
-    out << "options: timeout_ms=60000 max_depth=20 thread_count=4\n";
+    out << "options: timeout_ms=60000 max_depth=30 thread_count=4\n";
     out << "verify: refsim solved+scramble+solution==solved\n";
     out << "warmup: 1 solve per config (excluded)\n";
     out << "\nconfig | successes | avg_ms | median_ms | p95_ms | max_ms\n";
@@ -765,26 +615,95 @@ static int cmd_parity(int n, unsigned seed) {
   return ok ? 0 : 1;
 }
 
+// discovery: priority explicit > ./tables > build/tables (mock dirs, no
+// 11.8 GB tables needed). Uses the pure helpers so no cwd change or
+// global override is involved.
+static int cmd_discovery() {
+  std::cout << "discovery: start (mock dirs)\n";
+  int failures = 0;
+  auto check = [&](bool cond, const std::string& what) {
+    std::cout << "  " << what << ": " << (cond ? "ok" : "FAIL") << "\n";
+    if (!cond) ++failures;
+  };
+  std::error_code ec;
+  const fs::path root =
+      fs::temp_directory_path(ec) / "rubik_tables_discovery_mock";
+  fs::remove_all(root, ec);
+  fs::create_directories(root, ec);
+  const fs::path cwd = root / "work";
+  const fs::path exe_dir = root / "exe";
+  const fs::path local = cwd / "tables";          // (2) ./tables
+  const fs::path bld = cwd / "build" / "tables";  // (3) build/tables
+  const fs::path exe_t = exe_dir / "tables";      // (4)
+  const fs::path explicit_dir = root / "explicit";
+  auto make_tables = [&](const fs::path& d) {
+    fs::create_directories(d, ec);
+    std::ofstream(d / "cornerHeuristicHTM") << "mock";
+  };
+  // 0. Empty: no candidate wins (fallback would be h=0 Timeout).
+  {
+    const auto got = rubik::tables::first_tables_dir(
+        rubik::tables::tables_discovery_candidates(cwd, exe_dir));
+    check(got.empty(), "empty -> empty");
+  }
+  // 1. Explicit wins over ./tables + build/tables.
+  make_tables(local);
+  make_tables(bld);
+  make_tables(exe_t);
+  make_tables(explicit_dir);
+  {
+    const auto got = rubik::tables::discover_tables_dir(explicit_dir, cwd,
+                                                         exe_dir);
+    check(got == explicit_dir, "explicit wins");
+    check(rubik::tables::dir_contains_tables(explicit_dir),
+          "explicit dir_contains_tables");
+  }
+  // 2. ./tables wins over build/tables.
+  {
+    const auto got = rubik::tables::discover_tables_dir(fs::path(), cwd,
+                                                         exe_dir);
+    check(got == local, "./tables wins over build/tables");
+  }
+  // 3. build/tables wins when ./tables is absent.
+  fs::remove_all(local, ec);
+  {
+    const auto got = rubik::tables::discover_tables_dir(fs::path(), cwd,
+                                                         exe_dir);
+    check(got == bld, "build/tables when ./tables absent");
+  }
+  // 4. exe tables win when cwd candidates are absent.
+  fs::remove_all(bld, ec);
+  {
+    const auto got = rubik::tables::discover_tables_dir(fs::path(), cwd,
+                                                         exe_dir);
+    check(got == exe_t, "exe tables when cwd absent");
+  }
+  // 5. resolve-with-explicit still wins (global API).
+  {
+    const auto got =
+        rubik::tables::resolve_tables_dir(explicit_dir);
+    check(got == explicit_dir, "resolve_tables_dir(explicit) wins");
+  }
+  fs::remove_all(root, ec);
+  std::cout << "discovery: failures=" << failures << "\n";
+  std::cout << "discovery: " << (failures == 0 ? "PASS" : "FAIL") << "\n";
+  return failures == 0 ? 0 : 1;
+}
+
 int main(int argc, char* argv[]) {
   if (argc < 2) {
     std::cout << "Usage: tables_verifier <fallback|selftest|admissibility|"
-                 "entrycompare|parity> [args]\n";
+                 "discovery|parity> [args]\n";
     return 2;
   }
   const std::string cmd = argv[1];
   if (cmd == "fallback") return cmd_fallback();
+  if (cmd == "discovery") return cmd_discovery();
   if (cmd == "selftest") return cmd_selftest();
   if (cmd == "admissibility") {
     unsigned seed = 20261108u;
     if (argc >= 3) seed = static_cast<unsigned>(std::stoul(argv[2]));
     return cmd_admissibility(seed);
-  }
-  if (cmd == "entrycompare") {
-    int n = 1000000;
-    unsigned seed = 777001u;
-    if (argc >= 3) n = std::stoi(argv[2]);
-    if (argc >= 4) seed = static_cast<unsigned>(std::stoul(argv[3]));
-    return cmd_entrycompare(n, seed);
   }
   if (cmd == "parity") {
     int n = 500;

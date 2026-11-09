@@ -13,9 +13,13 @@
 #include <vector>
 
 #include "core/moves.hpp"
+#include "core/pdb.hpp"
+#include "core/searcher.hpp"
 
 namespace rubik::cfop {
 namespace {
+
+using rubik::core::pdbLookup;  // shared byte-table lookup (core/pdb.hpp)
 
 // ---------------------------------------------------------------------------
 // Corners 0..7, edges 0..11 as in core/cube.hpp.
@@ -779,12 +783,6 @@ std::uint32_t pairPatternIdx(const CubeState& s, int cornerCubie,
        (static_cast<unsigned>(ePos) * 2u + eOri)));
 }
 
-inline int pdbLookup(const std::vector<std::uint8_t>& db,
-                     std::uint32_t idx) {
-  const std::uint8_t v = db[idx];
-  return (v == 255u) ? 0 : static_cast<int>(v);
-}
-
 std::uint32_t pllPermIdx(const CubeState& s) {
   std::array<std::uint8_t, 4> cPos{};
   std::array<std::uint8_t, 4> ePos{};
@@ -854,309 +852,188 @@ bool isValidCubieState(const CubeState& s) {
 }
 
 // ---------------------------------------------------------------------------
-// IDA* searcher. Heuristic = max of subproblem PDBs (admissible).
+// Per-stage IDA* via the shared core searcher (rubik::core::IdaSearcher).
+// Heuristic = max of subproblem PDBs (admissible); goal = stage predicate.
+// Only the stage wiring lives here; DFS / bounds / abort are shared.
 // ---------------------------------------------------------------------------
 enum class StageKind { Cross, F2L, Oll, Pll, PllCorners, OllCorners };
 
-struct Searcher {
-  StageKind kind = StageKind::Cross;
-  int pairIdx = 0;
-  const std::vector<int>* allowed = nullptr;
-  const Pdbs* pdbs = nullptr;
-  const MoveData* mv = nullptr;
-  int bestExceed = 0;
-  std::vector<int> path;
-  std::vector<int> solution;
-  bool found = false;
-  int abortKind = 0;  // 0 none, 1 timeout, 2 cancelled
-  std::uint64_t nodes = 0;
-  bool hasDeadline = false;
-  std::chrono::steady_clock::time_point deadline{};
-  std::stop_token externalToken{};
-
-  int heuristic(const CubeState& s) const {
-    int h = 0;
-    if (kind == StageKind::Cross) {
-      h = (std::max)(h, pdbLookup(pdbs->cross18,
-                                  edgePatternIdx(s, kCrossIds)));
-    } else if (kind == StageKind::F2L) {
-      h = (std::max)(h, pdbLookup(pdbs->cross18,
-                                  edgePatternIdx(s, kCrossIds)));
-      for (int j = 0; j <= pairIdx; ++j) {
-        const int cid = 4 + j;
-        const int eid = 8 + j;
-        h = (std::max)(h, pdbLookup(pdbs->pair18[static_cast<std::size_t>(j)],
-                                    pairPatternIdx(s, cid, eid)));
-      }
-    } else if (kind == StageKind::OllCorners) {
-      h = (std::max)(h, pdbLookup(pdbs->cross15,
-                                  edgePatternIdx(s, kCrossIds)));
-      for (int j = 0; j < 4; ++j) {
-        const int cid = 4 + j;
-        const int eid = 8 + j;
-        h = (std::max)(h, pdbLookup(pdbs->pair15[static_cast<std::size_t>(j)],
-                                    pairPatternIdx(s, cid, eid)));
-      }
-      h = (std::max)(h, pdbLookup(pdbs->ollC, cornerPatternIdx(s, kUIds)));
-    } else if (kind == StageKind::Oll) {
-      h = (std::max)(h, pdbLookup(pdbs->cross15,
-                                  edgePatternIdx(s, kCrossIds)));
-      for (int j = 0; j < 4; ++j) {
-        const int cid = 4 + j;
-        const int eid = 8 + j;
-        h = (std::max)(h, pdbLookup(pdbs->pair15[static_cast<std::size_t>(j)],
-                                    pairPatternIdx(s, cid, eid)));
-      }
-      h = (std::max)(h, pdbLookup(pdbs->ollC, cornerPatternIdx(s, kUIds)));
-      h = (std::max)(h, pdbLookup(pdbs->ollE, edgePatternIdx(s, kUIds)));
-      h = (std::max)(h, pdbLookup(pdbs->oriC, cornerOriIndex(s.co)));
-      h = (std::max)(h, pdbLookup(pdbs->oriE, edgeOriIndex(s.eo)));
-      h = (std::max)(h, pdbLookup(pdbs->oriBoth,
-                                 cornerOriIndex(s.co) * 2048u +
-                                     edgeOriIndex(s.eo)));
-    } else if (kind == StageKind::PllCorners) {
-      h = (std::max)(h, pdbLookup(pdbs->cross15,
-                                  edgePatternIdx(s, kCrossIds)));
-      for (int j = 0; j < 4; ++j) {
-        const int cid = 4 + j;
-        const int eid = 8 + j;
-        h = (std::max)(h, pdbLookup(pdbs->pair15[static_cast<std::size_t>(j)],
-                                    pairPatternIdx(s, cid, eid)));
-      }
-      h = (std::max)(h, pdbLookup(pdbs->ollE, edgePatternIdx(s, kUIds)));
-      h = (std::max)(h, pdbLookup(pdbs->pllC, cornerPatternIdx(s, kUIds)));
-      h = (std::max)(h, pdbLookup(pdbs->oriC, cornerOriIndex(s.co)));
-      h = (std::max)(h, pdbLookup(pdbs->oriE, edgeOriIndex(s.eo)));
-      h = (std::max)(h, pdbLookup(pdbs->oriBoth,
-                                 cornerOriIndex(s.co) * 2048u +
-                                     edgeOriIndex(s.eo)));
-    } else {
-      h = (std::max)(h, pdbLookup(pdbs->cross15,
-                                  edgePatternIdx(s, kCrossIds)));
-      for (int j = 0; j < 4; ++j) {
-        const int cid = 4 + j;
-        const int eid = 8 + j;
-        h = (std::max)(h, pdbLookup(pdbs->pair15[static_cast<std::size_t>(j)],
-                                    pairPatternIdx(s, cid, eid)));
-      }
-      h = (std::max)(h, pdbLookup(pdbs->ollC, cornerPatternIdx(s, kUIds)));
-      h = (std::max)(h, pdbLookup(pdbs->ollE, edgePatternIdx(s, kUIds)));
-      h = (std::max)(h, pdbLookup(pdbs->pllC, cornerPatternIdx(s, kUIds)));
-      h = (std::max)(h, pdbLookup(pdbs->pllE, edgePatternIdx(s, kUIds)));
-      h = (std::max)(h, pdbLookup(pdbs->oriC, cornerOriIndex(s.co)));
-      h = (std::max)(h, pdbLookup(pdbs->oriE, edgeOriIndex(s.eo)));
-      h = (std::max)(h, pdbLookup(pdbs->oriBoth,
-                                 cornerOriIndex(s.co) * 2048u +
-                                     edgeOriIndex(s.eo)));
-      h = (std::max)(h, pdbLookup(pdbs->pllPerm, pllPermIdx(s)));
+bool stageGoal(StageKind kind, int pairIdx, const CubeState& s) {
+  if (kind == StageKind::Cross) return is_cross_solved(s);
+  if (kind == StageKind::F2L) {
+    if (!is_cross_solved(s)) return false;
+    for (int j = 0; j <= pairIdx; ++j) {
+      if (!is_f2l_pair_solved(s, j)) return false;
     }
-    return h;
+    return true;
   }
-
-  bool goal(const CubeState& s) const {
-    if (kind == StageKind::Cross) return is_cross_solved(s);
-    if (kind == StageKind::F2L) {
-      if (!is_cross_solved(s)) return false;
-      for (int j = 0; j <= pairIdx; ++j) {
-        if (!is_f2l_pair_solved(s, j)) return false;
-      }
-      return true;
+  if (kind == StageKind::Oll) return is_oll_solved(s);
+  if (kind == StageKind::OllCorners) {
+    if (!is_f2l_solved(s)) return false;
+    for (int i = 0; i < 4; ++i) {
+      if (s.co[static_cast<std::size_t>(i)] != 0u) return false;
     }
-    if (kind == StageKind::Oll) return is_oll_solved(s);
-    if (kind == StageKind::OllCorners) {
-      if (!is_f2l_solved(s)) return false;
-      for (int i = 0; i < 4; ++i) {
-        if (s.co[static_cast<std::size_t>(i)] != 0u) return false;
-      }
-      return true;
-    }
-    if (kind == StageKind::PllCorners) {
-      if (!is_f2l_solved(s)) return false;
-      for (int i = 0; i < 4; ++i) {
-        const std::size_t ii = static_cast<std::size_t>(i);
-        if (s.cp[ii] != static_cast<std::uint8_t>(i)) return false;
-        if (s.co[ii] != 0u) return false;
-      }
-      for (int i = 0; i < 12; ++i) {
-        if (s.eo[static_cast<std::size_t>(i)] != 0u) return false;
-      }
-      return true;
-    }
-    return is_pll_solved(s);
+    return true;
   }
-
-  bool dfsOrdered(const CubeState& cur, int g, int prevFace, int bound) {
-    if (abortKind != 0) return true;
-    if (goal(cur)) {
-      solution = path;
-      found = true;
-      return true;
+  if (kind == StageKind::PllCorners) {
+    if (!is_f2l_solved(s)) return false;
+    for (int i = 0; i < 4; ++i) {
+      const std::size_t ii = static_cast<std::size_t>(i);
+      if (s.cp[ii] != static_cast<std::uint8_t>(i)) return false;
+      if (s.co[ii] != 0u) return false;
     }
-    if (((++nodes) & 1023u) == 0u) {
-      if (externalToken.stop_requested()) {
-        abortKind = 2;
-        return true;
-      }
-      if (hasDeadline && std::chrono::steady_clock::now() >= deadline) {
-        abortKind = 1;
-        return true;
-      }
+    for (int i = 0; i < 12; ++i) {
+      if (s.eo[static_cast<std::size_t>(i)] != 0u) return false;
     }
-    struct Cand {
-      int h = 0;
-      int mvIdx = -1;
-      CubeState next;
-    };
-    std::array<Cand, 18> cands;
-    int n = 0;
-    for (int mvIdx : *allowed) {
-      const int face = mvIdx / 3;
-      if (face == prevFace) continue;
-      const CubeState next = fastApply(cur, mvIdx, *mv);
-      const int h = heuristic(next);
-      if (g + 1 + h > bound) continue;
-      cands[static_cast<std::size_t>(n)].h = h;
-      cands[static_cast<std::size_t>(n)].mvIdx = mvIdx;
-      cands[static_cast<std::size_t>(n)].next = next;
-      ++n;
-    }
-    std::sort(cands.begin(), cands.begin() + n,
-              [](const Cand& a, const Cand& b) { return a.h < b.h; });
-    for (int i = 0; i < n; ++i) {
-      const int mvIdx = cands[static_cast<std::size_t>(i)].mvIdx;
-      path.push_back(mvIdx);
-      if (dfsOrdered(cands[static_cast<std::size_t>(i)].next, g + 1,
-                     mvIdx / 3, bound)) {
-        return true;
-      }
-      path.pop_back();
-      if (abortKind != 0) return true;
-    }
-    return false;
+    return true;
   }
+  return is_pll_solved(s);
+}
 
-  bool dfs(const CubeState& cur, int g, int prevFace, int bound) {
-    if (abortKind != 0) return true;
-    if (goal(cur)) {
-      solution = path;
-      found = true;
-      return true;
+int stageHeuristic(StageKind kind, int pairIdx, const Pdbs& pdbs,
+                   const CubeState& s) {
+  int h = 0;
+  if (kind == StageKind::Cross) {
+    h = (std::max)(h, pdbLookup(pdbs.cross18, edgePatternIdx(s, kCrossIds)));
+  } else if (kind == StageKind::F2L) {
+    h = (std::max)(h, pdbLookup(pdbs.cross18, edgePatternIdx(s, kCrossIds)));
+    for (int j = 0; j <= pairIdx; ++j) {
+      const int cid = 4 + j;
+      const int eid = 8 + j;
+      h = (std::max)(h, pdbLookup(pdbs.pair18[static_cast<std::size_t>(j)],
+                                  pairPatternIdx(s, cid, eid)));
     }
-    if (((++nodes) & 1023u) == 0u) {
-      if (externalToken.stop_requested()) {
-        abortKind = 2;
-        return true;
-      }
-      if (hasDeadline && std::chrono::steady_clock::now() >= deadline) {
-        abortKind = 1;
-        return true;
-      }
+  } else if (kind == StageKind::OllCorners) {
+    h = (std::max)(h, pdbLookup(pdbs.cross15, edgePatternIdx(s, kCrossIds)));
+    for (int j = 0; j < 4; ++j) {
+      const int cid = 4 + j;
+      const int eid = 8 + j;
+      h = (std::max)(h, pdbLookup(pdbs.pair15[static_cast<std::size_t>(j)],
+                                  pairPatternIdx(s, cid, eid)));
     }
-    const int h = heuristic(cur);
-    const int f = g + h;
-    if (f > bound) {
-      if (f < bestExceed) bestExceed = f;
-      return false;
+    h = (std::max)(h, pdbLookup(pdbs.ollC, cornerPatternIdx(s, kUIds)));
+  } else if (kind == StageKind::Oll) {
+    h = (std::max)(h, pdbLookup(pdbs.cross15, edgePatternIdx(s, kCrossIds)));
+    for (int j = 0; j < 4; ++j) {
+      const int cid = 4 + j;
+      const int eid = 8 + j;
+      h = (std::max)(h, pdbLookup(pdbs.pair15[static_cast<std::size_t>(j)],
+                                  pairPatternIdx(s, cid, eid)));
     }
-    struct Cand {
-      int h = 0;
-      int f = 0;
-      int mvIdx = -1;
-      CubeState next;
-    };
-    std::array<Cand, 18> cands;
-    int n = 0;
-    for (int mvIdx : *allowed) {
-      const int face = mvIdx / 3;
-      if (face == prevFace) continue;
-      const CubeState next = fastApply(cur, mvIdx, *mv);
-      const int hh = heuristic(next);
-      const int ff = g + 1 + hh;
-      if (ff > bound) {
-        if (ff < bestExceed) bestExceed = ff;
-        continue;
-      }
-      Cand& c = cands[static_cast<std::size_t>(n)];
-      c.h = hh;
-      c.f = ff;
-      c.mvIdx = mvIdx;
-      c.next = next;
-      ++n;
+    h = (std::max)(h, pdbLookup(pdbs.ollC, cornerPatternIdx(s, kUIds)));
+    h = (std::max)(h, pdbLookup(pdbs.ollE, edgePatternIdx(s, kUIds)));
+    h = (std::max)(h, pdbLookup(pdbs.oriC, cornerOriIndex(s.co)));
+    h = (std::max)(h, pdbLookup(pdbs.oriE, edgeOriIndex(s.eo)));
+    h = (std::max)(h,
+                   pdbLookup(pdbs.oriBoth, cornerOriIndex(s.co) * 2048u +
+                                               edgeOriIndex(s.eo)));
+  } else if (kind == StageKind::PllCorners) {
+    h = (std::max)(h, pdbLookup(pdbs.cross15, edgePatternIdx(s, kCrossIds)));
+    for (int j = 0; j < 4; ++j) {
+      const int cid = 4 + j;
+      const int eid = 8 + j;
+      h = (std::max)(h, pdbLookup(pdbs.pair15[static_cast<std::size_t>(j)],
+                                  pairPatternIdx(s, cid, eid)));
     }
-    std::sort(cands.begin(), cands.begin() + n,
-              [](const Cand& a, const Cand& b) {
-                if (a.f != b.f) return a.f < b.f;
-                return a.h < b.h;
-              });
-    for (int i = 0; i < n; ++i) {
-      const int mvIdx = cands[static_cast<std::size_t>(i)].mvIdx;
-      path.push_back(mvIdx);
-      if (dfs(cands[static_cast<std::size_t>(i)].next, g + 1, mvIdx / 3,
-              bound)) {
-        return true;
-      }
-      path.pop_back();
-      if (abortKind != 0) return true;
+    h = (std::max)(h, pdbLookup(pdbs.ollE, edgePatternIdx(s, kUIds)));
+    h = (std::max)(h, pdbLookup(pdbs.pllC, cornerPatternIdx(s, kUIds)));
+    h = (std::max)(h, pdbLookup(pdbs.oriC, cornerOriIndex(s.co)));
+    h = (std::max)(h, pdbLookup(pdbs.oriE, edgeOriIndex(s.eo)));
+    h = (std::max)(h,
+                   pdbLookup(pdbs.oriBoth, cornerOriIndex(s.co) * 2048u +
+                                               edgeOriIndex(s.eo)));
+  } else {
+    h = (std::max)(h, pdbLookup(pdbs.cross15, edgePatternIdx(s, kCrossIds)));
+    for (int j = 0; j < 4; ++j) {
+      const int cid = 4 + j;
+      const int eid = 8 + j;
+      h = (std::max)(h, pdbLookup(pdbs.pair15[static_cast<std::size_t>(j)],
+                                  pairPatternIdx(s, cid, eid)));
     }
-    return false;
+    h = (std::max)(h, pdbLookup(pdbs.ollC, cornerPatternIdx(s, kUIds)));
+    h = (std::max)(h, pdbLookup(pdbs.ollE, edgePatternIdx(s, kUIds)));
+    h = (std::max)(h, pdbLookup(pdbs.pllC, cornerPatternIdx(s, kUIds)));
+    h = (std::max)(h, pdbLookup(pdbs.pllE, edgePatternIdx(s, kUIds)));
+    h = (std::max)(h, pdbLookup(pdbs.oriC, cornerOriIndex(s.co)));
+    h = (std::max)(h, pdbLookup(pdbs.oriE, edgeOriIndex(s.eo)));
+    h = (std::max)(h,
+                   pdbLookup(pdbs.oriBoth, cornerOriIndex(s.co) * 2048u +
+                                               edgeOriIndex(s.eo)));
+    h = (std::max)(h, pdbLookup(pdbs.pllPerm, pllPermIdx(s)));
   }
+  return h;
+}
+
+// Search state wraps the cube with the previously used face so the shared
+// searcher keeps the original same-face pruning (core::IdaSearcher has no
+// pruning hook). A same-face continuation is marked dead and given a huge
+// heuristic, so its f always exceeds the bound and the branch is pruned.
+// This is optimality-neutral: any path with two consecutive same-face moves
+// merges into a single move, so an optimal path never needs them.
+struct SearchState {
+  CubeState cube;
+  int prevFace = -1;
+  bool dead = false;
 };
+
+inline constexpr int kPruneHeuristic = 1 << 25;
 
 std::expected<std::vector<int>, SolveError> runIda(
     const CubeState& start, StageKind kind, int pairIdx,
     const std::vector<int>& allowed, int stageLimit, bool hasDeadline,
     std::chrono::steady_clock::time_point deadline,
-    std::stop_token externalToken) {
+    std::stop_token externalToken, int threadCount = 1) {
   const MoveData& md = getMoveData();
   const Pdbs& pdbs = getPdbs();
-  Searcher searcher;
-  searcher.kind = kind;
-  searcher.pairIdx = pairIdx;
-  searcher.allowed = &allowed;
-  searcher.pdbs = &pdbs;
-  searcher.mv = &md;
-  searcher.hasDeadline = hasDeadline;
-  searcher.deadline = deadline;
-  searcher.externalToken = externalToken;
-  if (searcher.goal(start)) {
+  if (stageGoal(kind, pairIdx, start)) {
     return std::vector<int>{};
   }
-  int bound = searcher.heuristic(start);
-  while (true) {
-    if (bound > stageLimit) {
-      return std::unexpected(SolveError::Timeout);
-    }
-    if (externalToken.stop_requested()) {
-      return std::unexpected(SolveError::Cancelled);
-    }
-    if (hasDeadline && std::chrono::steady_clock::now() >= deadline) {
-      return std::unexpected(SolveError::Timeout);
-    }
-    searcher.bestExceed = 2147483647;
-    searcher.path.clear();
-    searcher.found = false;
-    searcher.abortKind = 0;
-    (void)searcher.dfs(start, 0, -1, bound);
-    if (searcher.found) {
-      return searcher.solution;
-    }
-    if (searcher.abortKind == 2) {
-      return std::unexpected(SolveError::Cancelled);
-    }
-    if (searcher.abortKind == 1) {
-      return std::unexpected(SolveError::Timeout);
-    }
-    if (externalToken.stop_requested()) {
-      return std::unexpected(SolveError::Cancelled);
-    }
-    if (hasDeadline && std::chrono::steady_clock::now() >= deadline) {
-      return std::unexpected(SolveError::Timeout);
-    }
-    if (searcher.bestExceed == 2147483647) {
-      return std::unexpected(SolveError::Unsolvable);
-    }
-    bound = searcher.bestExceed;
+  if (stageHeuristic(kind, pairIdx, pdbs, start) > stageLimit) {
+    return std::unexpected(SolveError::Timeout);
   }
+  auto apply = [&](const SearchState& s, int mvIdx) {
+    const int face = mvIdx / 3;
+    if (face == s.prevFace) {
+      return SearchState{s.cube, s.prevFace, true};
+    }
+    return SearchState{fastApply(s.cube, mvIdx, md), face, false};
+  };
+  auto goal = [&](const SearchState& s) {
+    return !s.dead && stageGoal(kind, pairIdx, s.cube);
+  };
+  auto heuristic = [&](const SearchState& s) {
+    if (s.dead) return kPruneHeuristic;
+    return stageHeuristic(kind, pairIdx, pdbs, s.cube);
+  };
+  using SearcherT = core::IdaSearcher<SearchState, decltype(apply),
+                                      decltype(goal), decltype(heuristic)>;
+  SearcherT searcher(&allowed, apply, goal, heuristic);
+  searcher.setThreadCount(threadCount);
+  if (hasDeadline) searcher.setDeadline(deadline);
+  searcher.setStopToken(externalToken);
+  const SearchState root{start, -1, false};
+  auto result = searcher.run(root, stageLimit);
+  if (result) return result;
+  if (result.error() == SolveError::Timeout ||
+      result.error() == SolveError::Cancelled) {
+    return result;
+  }
+  // The shared searcher reports Unsolvable both for genuinely unreachable
+  // goals and for "optimal depth exceeds stageLimit". Cfop semantics map
+  // the latter to Timeout, so distinguish with a capped probe run.
+  SearcherT probe(&allowed, apply, goal, heuristic);
+  probe.setThreadCount(threadCount);
+  if (hasDeadline) probe.setDeadline(deadline);
+  probe.setStopToken(externalToken);
+  auto probeResult = probe.run(root, 40);
+  if (probeResult) {
+    return std::unexpected(SolveError::Timeout);
+  }
+  if (probeResult.error() == SolveError::Timeout ||
+      probeResult.error() == SolveError::Cancelled) {
+    return probeResult;
+  }
+  return std::unexpected(SolveError::Unsolvable);
 }
 
 std::vector<std::string> tokensFor(const std::vector<int>& idxs,
@@ -1404,7 +1281,7 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
   // Run stages explicitly so each predicate is checked with its own helper.
   {
     auto r = runIda(cur, StageKind::Cross, 0, a18, stageLimit, hasDeadline,
-                    deadline, options.stop_token);
+                    deadline, options.stop_token, options.thread_count);
     if (!r) return std::unexpected(r.error());
     const std::vector<int> idxs = *r;
     const std::vector<std::string> toks = tokensFor(idxs, md);
@@ -1421,7 +1298,7 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
   for (int k = 0; k < 4; ++k) {
     const std::string name = std::format("f2l_{}", k + 1);
     auto r = runIda(cur, StageKind::F2L, k, a18, stageLimit, hasDeadline,
-                    deadline, options.stop_token);
+                    deadline, options.stop_token, options.thread_count);
     if (!r) return std::unexpected(r.error());
     const std::vector<int> idxs = *r;
     const std::vector<std::string> toks = tokensFor(idxs, md);
@@ -1440,7 +1317,7 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
   }
   {
     auto r = runIda(cur, StageKind::Oll, 0, a15, stageLimit, hasDeadline,
-                    deadline, options.stop_token);
+                    deadline, options.stop_token, options.thread_count);
     if (!r) return std::unexpected(r.error());
     const std::vector<int> idxs = *r;
     const std::vector<std::string> toks = tokensFor(idxs, md);
@@ -1474,7 +1351,8 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
       // Fallback: two-phase split (corners then edges), then single-phase.
       {
         auto r1 = runIda(cur, StageKind::PllCorners, 0, a15, stageLimit,
-                         hasDeadline, deadline, options.stop_token);
+                         hasDeadline, deadline, options.stop_token,
+                         options.thread_count);
         if (!r1) {
           splitErr = r1.error();
         } else {
@@ -1486,7 +1364,8 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
             splitErr = SolveError::Timeout;
           } else {
             auto r2 = runIda(mid, StageKind::Pll, 0, a15, remaining,
-                             hasDeadline, deadline, options.stop_token);
+                             hasDeadline, deadline, options.stop_token,
+                             options.thread_count);
             if (!r2) {
               splitErr = r2.error();
             } else {
@@ -1508,7 +1387,7 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
         return std::unexpected(SolveError::Timeout);
       }
       auto r = runIda(cur, StageKind::Pll, 0, a15, stageLimit, hasDeadline,
-                      deadline, options.stop_token);
+                      deadline, options.stop_token, options.thread_count);
       if (!r) return std::unexpected(r.error());
       idxs = *r;
       ok = true;

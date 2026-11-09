@@ -3,6 +3,11 @@
 Date: 2026-11-08. Status: Phase 0 recon — read-only except this file. `tables\` untouched.
 Repo is source of truth; where prior summary differs from repo, repo wins (noted below).
 
+> Removal note (post-Phase-0): the former single-phase IDA* solver has been
+> removed from the tree (see git history). The `twophase` solver is now the
+> only consumer of `tables\`. Historical sections below describe the
+> pre-removal design; where they say "current", read "pre-removal".
+
 ## 0. Terminology: "tables" in this file
 
 `tables\` (this folder, 34 files, no manifest) ≠ `data\` (our generated Korf
@@ -239,9 +244,9 @@ mix. No header in any `tables\` file.
 
 ## 3. Index-function hypotheses (cube state → entry)
 
-### 3.1 Our frozen core (`src/core/cube.hpp`, `src/solvers/optimal/solver.hpp/.cpp`)
+### 3.1 Our frozen core (`src/core/cube.hpp`; pre-removal `solver.hpp/.cpp`, see git history)
 
-Existing (frozen) index functions in `solver.hpp`/`solver.cpp`:
+Existing (frozen) index functions of the pre-removal solver:
 
 - Cubies: `CP[0..7]`/`CO[0..7]`, `EP[0..11]`/`EO[0..11]` in Kociemba order
   (corners URF,UFL,ULB,UBR,DFR,DLF,DBL,DRB; edges UR,UF,UL,UB,DR,DF,DL,DB,FR,FL,BL,BR).
@@ -338,10 +343,12 @@ functions above depend on it.
 
 ## 4. Proposed mapping tables→solvers
 
-Repo has no two-phase solver (§8 `docs/SPEC.md` optimal = IDA* + 4 Korf PDBs;
-`src/solvers/` contains only `optimal/` and human-method stubs). So:
+This was written before the two-phase solver existed (§8 `docs/SPEC.md`
+pre-removal described a single-phase IDA* + 4 Korf PDB solver). As of the
+removal, `src/solvers/twophase/` consumes these tables and the single-phase
+solver is gone.
 
-- `cornerHeuristic{HTM,QTM,STM,ATM}` → **optimal solver (additional admissible heuristic)**.
+- `cornerHeuristic{HTM,QTM,STM,ATM}` → **single-phase solver (additional admissible heuristic; pre-removal proposal)**.
   Same domain as our corner PDB (88,179,840 corner patterns) but different
   index order. Could either replace `data\corner.db` (after re-index) or be
   used as a 5th heuristic `h_corner = max(h_corner, h_tables)` if the
@@ -354,35 +361,29 @@ Repo has no two-phase solver (§8 `docs/SPEC.md` optimal = IDA* + 4 Korf PDBs;
   if the solver itself is generalized to those metrics, which is out of
   scope for the frozen interface.
 
-- `edgePermutationHeuristic*` → **optimal solver (additional heuristic)**.
+- `edgePermutationHeuristic*` → **single-phase solver (additional heuristic; pre-removal proposal)**.
   Full 12! edge-permutation distance. Stronger than any single 6-edge PDB
   in isolation but 240 MB. Usable as `h_edgePerm` in `max()` with HTM only.
   Requires new 12!-rank + `encodeAllEdges` equivalent.
 
-- `kociembaPhase1Heuristic{HTM}` → **optimal solver (additional pruning)**.
+- `kociembaPhase1Heuristic{HTM}` → **single-phase solver (additional pruning; pre-removal proposal)**.
   Distance to G1 (orientation+slice). Admissible for full-cube distance
   (lower bound). Upstream uses it ×6 (3 orientations × {forward,inverse},
   max of 6) — that orientation-max trick needs whole-cube rotations,
   which our `cube.hpp` supports via `centers`. Could be a 5th/6th heuristic.
   Requires Symmetry tables + Phase-1 coordinate encoder.
 
-- `largeKociembaPhase1Heuristic{HTM}` → **optimal (stronger Phase-1 heuristic)**.
+- `largeKociembaPhase1Heuristic{HTM}` → **single-phase solver (stronger Phase-1 heuristic; pre-removal proposal; the tables are now used by `twophase` instead)**.
   Same as above but slices permuted (24×). 2.4 GB file — loading into RAM
   on this machine needs verification (upstream requires 3 GB RAM). Recommend
   deferring until Phase-1 heuristic validates; not needed for MVP.
 
-- `kociembaPhase2Heuristic{HTM}` → **not usable by our current optimal IDA***
+- `kociembaPhase2Heuristic{HTM}` → **not usable by the single-phase IDA***
   (solves G1→solved, meaningful only inside G1). It is a Phase-2 PDB
-  (mod-3 packing, parity-halved indexes). Useful if/when a two-phase solver
-  is added.
-  **New method needed?** Two-phase solver would be a *new* solver beyond
-  frozen `optimal` (which is single-phase IDA* over full cube). The task
-  brief anticipates this ("unknown/new method needed? if e.g. two-phase").
-  Proposal: do NOT shoehorn Phase-2 tables into `optimal`. If two-phase is
-  pursued later, the same files serve it directly via upstream's
-  Phase-2 IDA* (successor = Phase-2 movement tables, heuristic = Phase-2
-  heuristic mod-3 trick). Requires parity/equivalence-class logic.
-  Symmetry + Movement companions make this the most self-contained option.
+  (mod-3 packing, parity-halved indexes). It is now used directly by the
+  `twophase` solver via upstream's Phase-2 IDA* (successor = Phase-2
+  movement tables, heuristic = Phase-2 heuristic mod-3 trick), with the
+  parity/equivalence-class logic implemented in `src/solvers/twophase/`.
 
 - `kociembaPhase1Movement*` / `kociembaPhase2Movement*` /
   `pieceCubeMovement*` → **supporting tables for whichever solver uses the
@@ -398,12 +399,12 @@ Repo has no two-phase solver (§8 `docs/SPEC.md` optimal = IDA* + 4 Korf PDBs;
   before any Phase-1/Phase-2 heuristic lookup (index depends on `sym`).
   Sizes: 65.8 MB + 5.4 MB.
 
-Recommendation (no-frozen-change, minimal): P1 validates `cornerHeuristicHTM`
+Recommendation (pre-removal, superseded): P1 was to validate `cornerHeuristicHTM`
 and `edgePermutationHeuristicHTM` as extra `max()` heuristics for the
-existing optimal solver only, if index-mapping + admissibility tests pass.
-`kociembaPhase1HeuristicHTM` (+Phase1 Movement + Phase1 Symmetry) is the
-second candidate (admissible, no two-phase machinery needed). Two-phase
-tables are documented as future-work, not wired in.
+single-phase solver, if index-mapping + admissibility tests pass.
+`kociembaPhase1HeuristicHTM` (+Phase1 Movement + Phase1 Symmetry) was the
+second candidate. Two-phase tables were future-work then; `twophase` now
+wires them in.
 
 ## 5. File-format verification plan (must pass before any solver use)
 
@@ -428,15 +429,13 @@ All checks are read-only vs `tables\` + reproducible from `data\` + BFS.
    Also repeat for Phase-1: sample `(twist,flip,class45)` uniformly in
    reduced domain, compare nibble vs BFS distance to G1 to depth ≤6.
 
-3. **Optimal length parity / depth ≤11 consistency.**
-   For 1,000 random HTM scrambles of depth ≤10, solve optimally with our
-   `optimal::solve` (with `data\` PDBs) and with `max()` augmented by
-   `tables\` HTM heuristics; assert solutions solve (reference simulator),
-   lengths equal or shorter (heuristic only tightens IDA* bounds), and
-   both ≤ scramble depth. Parity check: BFS-optimal lengths for depth ≤7
-   equal IDA* lengths (as in `docs/SPEC.md` §10). Any `DatabaseMissing`
-   vs. new-table fallback must be distinguished (missing `tables\` file
-   must not silently fall back to suboptimal).
+3. **Length parity / depth ≤11 consistency.**
+   For 1,000 random HTM scrambles of depth ≤10, solve with
+   `twophase::solve` (with and without the `tables\` HTM heuristics);
+   assert solutions solve (reference simulator) and lengths match
+   (the heuristic only tightens IDA* bounds). Any `DatabaseMissing`
+   vs. new-table fallback must be distinguished (a missing `tables\` file
+   must not silently fall back to a degraded search).
 
 4. **Fallback test.**
    Point loader at empty dir / missing `tables\` file / wrong size /
@@ -456,10 +455,11 @@ file modified.
 ## 6. Origin / licence
 
 - **Origin (verified):** every SHA-256 in §1.1 matches the public table
-  page verbatim — James Cameron, "Optimal Rubik's Cube Solver,"
+  page verbatim — James Cameron, "Optimal Rubik's Cube Solver" (a proper
+  name for the upstream project, not this repo's former method),
   `https://jamescameron.me/rubiks-cube-solver` / tables page
   `https://jamescameron.me/rubiks-cube-solver/tables`, source repo
-  `https://github.com/Equinaut/Optimal-Rubiks-Cube-Solver` (C, optimal IDA*
+  `https://github.com/Equinaut/Optimal-Rubiks-Cube-Solver` (C, IDA*
   with Korf/Reid heuristics + Kociemba two-phase, 4 metrics HTM/QTM/STM/ATM).
   Reference docs: `docs/lookup-tables.md` ("heuristic / movement / symmetry"
   tables), `src/lookupTables/*` (generation + on-disk layout), `src/encode/*`
@@ -478,12 +478,11 @@ confirming byte-for-byte hashes locally (§1.1 vs upstream page).
 
 ## 7. Constraints & portability (plan only, no code yet)
 
-- **Frozen interface unchanged.** `docs/SPEC.md` §8 optimal signature
+- **Frozen interface unchanged.** `docs/SPEC.md` §8 signature
   (`solve(CubeState,SolveOptions) → expected<Solution,SolveError>`) and
   `Solver`/`SolveOptions` are untouched. Any `tables\` heuristics are
-  internal to `src/solvers/optimal/` (extra `h` terms). No new
-  `SolveOptions` fields, no new `SolveError` values, no new solver method
-  (two-phase would be a new `SolverType` — explicitly deferred).
+  internal to `src/solvers/twophase/` (extra `h` terms). No new
+  `SolveOptions` fields, no new `SolveError` values.
 - **No new deps.** Loader uses only C++23 stdlib (`<filesystem>`,
   `<fstream>`, `<vector>`, `<expected>`). No GoogleTest additions, no
   compression libs, no mmap libraries.
@@ -540,14 +539,31 @@ confirming byte-for-byte hashes locally (§1.1 vs upstream page).
    from P1.
 4. **Licence unknown** (see §6). Reuse of `tables\` bytes is read-only
    recon; productizing heuristics derived from them needs licence clarity.
-5. **Two-phase solver** is a new method (not frozen `optimal`). If pursued,
-   interface freeze must be revisited (new `Solver` value, G1 IDA*,
-   mod-3 parity heuristic). Out of P1 scope unless approved.
+5. **Two-phase solver** was deferred then (a new method outside the four
+   human methods); it has since been added (`src/solvers/twophase/`) without
+   changing the frozen `solve()` signature.
 6. **`kociembaPhase1Symmetry` 65 MB `u32` tail** includes
    `1,013,760×16` edge-orientation symmetries — verify memory fit on this
    machine (upstream states 3 GB RAM for full set) before adding.
 
 ## Approval (user 2026-11-08)
 
-User approved **All incl. two-phase**: integrate cornerHTM+edgePerm+phase1 as extra max() heuristics for optimal (HTM+all metrics), large (2.4GB, memory-mapped), and phase2+symmetry+movements as a **new two-phase solver method** (explicitly approved new method). Licence remains listed as **unknown** in this file (no upstream LICENSE); loader will fail-closed on size/hash.
+User approved **All incl. two-phase**: integrate cornerHTM+edgePerm+phase1 as extra max() heuristics for the single-phase solver (HTM+all metrics), large (2.4GB, memory-mapped), and phase2+symmetry+movements as a **new two-phase solver method** (explicitly approved new method). Licence remains listed as **unknown** in this file (no upstream LICENSE); loader will fail-closed on size/hash. (The single-phase solver was later removed; see removal note at top.)
+
+## Appendix C — tables-dir discovery (twophase, no flag needed)
+
+`twophase` finds its tables automatically; `--tables-dir` is optional.
+Discovery order (first match wins; presence = `cornerHeuristicHTM` exists):
+
+1. explicit `--tables-dir` / `--data-dir` / env `RUBIK_TABLES_DIR` / `RUBIK_DATA_DIR` (and `set_tables_dir()` override);
+2. `./tables/`;
+3. `build/tables/` (gitignored 11.8 GB set in this repo);
+4. `<executable-dir>/tables/` and `<executable-dir>/../tables/`;
+5. legacy `../tables`, `tables`.
+
+Same order is printed by `rubik-solver --help` and in `README.md`.
+No table regeneration and no search-semantics change: phase1 still
+uses 18 HTM moves to G1, phase2 still uses the 10 G1-preserving moves,
+and when no candidate is present the solver keeps h=0 and reports
+`Timeout` exactly (never an error).
 Encoding utf8

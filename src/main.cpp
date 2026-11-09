@@ -14,7 +14,6 @@
 #include "core/validation.hpp"
 #include "solvers/cfop/solver.hpp"
 #include "solvers/heise/solver.hpp"
-#include "solvers/optimal/solver.hpp"
 #include "solvers/roux/solver.hpp"
 #include "solvers/twophase/solver.hpp"
 #include "solvers/zz/solver.hpp"
@@ -27,7 +26,11 @@ using rubik::SolveError;
 using rubik::SolveOptions;
 
 void print_help() {
-  std::cout << "Usage: rubik-solver --method <cfop|roux|zz|heise|optimal|twophase> [--scramble \"R U R' ...\"] [--facelets <54>] [--random-depth N] [--seed N] [--data-dir DIR] [--tables-dir DIR] [--timeout-ms N]\n";
+  std::cout << "Usage: rubik-solver --method <cfop|roux|zz|heise|twophase> [--scramble \"R U R' ...\"] [--facelets <54>] [--random-depth N] [--seed N] [--data-dir DIR] [--tables-dir DIR] [--timeout-ms N]\n";
+  std::cout << "Tables-dir discovery (twophase; first match wins):\n"
+               "  1. --tables-dir / --data-dir / env RUBIK_TABLES_DIR / RUBIK_DATA_DIR\n"
+               "  2. ./tables/  3. build/tables/  4. <exe-dir>/tables/ + <exe-dir>/../tables/\n"
+               "  5. legacy ../tables, tables.  Missing tables => h=0 fallback, Timeout (not an error).\n";
 }
 
 std::string error_name(SolveError e) {
@@ -95,24 +98,24 @@ int main(int argc, char* argv[]) {
     {"roux", &rubik::roux::solve},
     {"zz", &rubik::zz::solve},
     {"heise", &rubik::heise::solve},
-    {"optimal", &rubik::optimal::solve},
     {"twophase", &rubik::twophase::solve},
   };
   auto it = registry.find(args.method);
   if (it == registry.end()) {
-    std::cerr << std::format("Error: unknown method '{}' (choose cfop|roux|zz|heise|optimal|twophase)\n", args.method);
+    std::cerr << std::format("Error: unknown method '{}' (choose cfop|roux|zz|heise|twophase)\n", args.method);
     return 2;
   }
-  // Forward --data-dir to optimal and --tables-dir to tables set dir.
-  // Default tables dir is .\\tables via default_tables_dir().
-  if (!args.data_dir.empty()) {
-    rubik::optimal::set_data_dir(args.data_dir);
+  // Forward --tables-dir (or legacy --data-dir) to the tables set dir
+  // (twophase). Discovery when no flag is given: explicit flag/env >
+  // ./tables > build/tables > <exe-dir>/tables + <exe-dir>/../tables >
+  // legacy ../tables, tables; missing tables keep h=0 + Timeout.
+  // Only call set_tables_dir when a flag is present so auto-discovery
+  // (resolve_tables_dir) is not pinned to the legacy default.
+  if (!args.tables_dir.empty()) {
+    rubik::tables::set_tables_dir(args.tables_dir);
+  } else if (!args.data_dir.empty()) {
+    rubik::tables::set_tables_dir(args.data_dir);
   }
-  if (args.tables_dir.empty()) {
-    args.tables_dir = rubik::tables::default_tables_dir().string();
-  }
-  rubik::tables::set_tables_dir(args.tables_dir);
-  rubik::optimal::set_tables_dir(args.tables_dir);
 
   // Build starting state: facelets > scramble > random > solved
   std::vector<std::string> scramble_tokens;
@@ -171,7 +174,7 @@ int main(int argc, char* argv[]) {
 
   SolveOptions opts;
   opts.timeout_ms = args.timeout_ms;
-  opts.max_depth = (args.method == "optimal") ? 20 : 30;
+  opts.max_depth = 30;
   opts.thread_count = 4;
 
   auto t0 = std::chrono::steady_clock::now();

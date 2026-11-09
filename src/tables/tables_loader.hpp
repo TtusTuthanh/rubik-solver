@@ -19,9 +19,10 @@
 // Encoders implement the upstream ranking (docs/tables.md Section 3.2
 // plus exact upstream src/encode constants): cubie-indexed PieceCube,
 // shuffled twist weights, 11-bit flip scatter, comb495 x 24, symmetry
-// class, phase2 ((class*40320+UD)*24+slice)>>1. Phase-2 symmetric-
-// position rewriting (getPhase2SymmetricPosition) remains deferred:
-// h_phase2_from_coords still takes already-symmetrised coordinates.
+// class, phase2 ((class*40320+UD)*24+slice)>>1. Phase-2 symmetric
+// positions (getPhase2SymmetricPosition) are computed by
+// phase2_corner_sym / phase2_ud_sym / phase2_e_sym and consumed by
+// the two-phase solver.
 
 #include <array>
 #include <bit>
@@ -276,6 +277,13 @@ class TableLoader {
   std::size_t view_size(std::string_view filename) const noexcept;
   bool is_loaded(std::string_view filename) const noexcept;
 
+  // Fast hot-path accessors by kTableSpecs index (no filename scans).
+  // Used by the per-node heuristic path.
+  static int index_of(std::string_view filename) noexcept;
+  const std::uint8_t* view_indexed(std::size_t idx) const noexcept;
+  bool load_indexed(std::size_t idx, bool verify_hashes);
+  bool is_loaded_indexed(std::size_t idx) const noexcept;
+
   // Heuristic getters (return 0 when not loaded / out of range, so
   // max() callers stay admissible; use is_loaded to detect absence).
   int corner_heuristic(std::string_view filename, std::uint64_t idx) const noexcept;
@@ -294,10 +302,12 @@ class TableLoader {
   std::uint32_t phase2_equiv_class(std::uint32_t sym_corner_perm) const noexcept;
   std::uint8_t phase2_min_orientation(std::uint32_t corner_perm) const noexcept;
   std::uint32_t phase2_corner_sym(std::uint32_t corner_perm, std::uint32_t sym) const noexcept;
+  std::uint32_t phase2_ud_sym(std::uint32_t ud_perm, std::uint32_t sym) const noexcept;
+  std::uint32_t phase2_e_sym(std::uint32_t slice_perm, std::uint32_t sym) const noexcept;
 
   // Movement successors: layout [coord*moveCount + move]. Out-of-range
   // coord/move (or unloaded file) returns coord unchanged (mirrors
-  // optimal solver's successor semantics).
+  // the frozen HTM solver's successor semantics).
   std::uint32_t phase1_corner_move(std::uint32_t coord, std::uint32_t move,
                                    Metric metric) const noexcept;
   std::uint32_t phase1_edge_move(std::uint32_t coord, std::uint32_t move,
@@ -324,13 +334,12 @@ class TableLoader {
 
 // -------------------------------------------------------------------------
 // Upstream encoders (docs/tables.md Section 3.2). All take frozen-core
-// CubeState and return upstream-ranking indexes in the same style as
-// optimal::corner_index / edge_index (same lookup semantics: bijection
-// onto the file domain, solved maps to 0 where applicable).
+// CubeState and return upstream-ranking indexes (bijection onto the
+// file domain, solved maps to 0 where applicable).
 // -------------------------------------------------------------------------
 
-// Upstream PieceCube facts (numeric constants transcribed from upstream
-// James Cameron / Equinaut Optimal-Rubiks-Cube-Solver, licence unknown,
+// Upstream PieceCube facts (numeric constants transcribed from the
+// upstream public solver, James Cameron; licence unknown,
 // no LICENSE in upstream repo; attribution only, no code copied):
 // upstream PieceCube is CUBIE-indexed: corners[cubie]=(position<<2)|twist,
 // edges[cubie]=(position<<1)|flip, with position/cubie ids in the lists
@@ -392,6 +401,20 @@ std::array<std::uint8_t, 8> upstream_unordered_corners(const CubeState& state);
 // Edge-permutation coordinate: 12! rank on 12 edges, orientation
 // stripped. Domain 479,001,600. Solved maps to 0.
 std::uint64_t upstream_edge_perm_index(const CubeState& state);
+// Phase-1 bundle (single to_piece_cube pass). The per-node heuristic
+// path uses this instead of calling the individual encoders (each of
+// which rebuilds the PieceCube): correctness-neutral, ~5x fewer
+// conversions per heuristic evaluation.
+// middle == comb495 * 24 + perm24 (same as upstream_middle_layer).
+struct Phase1Coords {
+  std::uint32_t twist = 0;   // 0..2186
+  std::uint32_t flip = 0;    // 11-bit
+  std::uint32_t comb495 = 0;
+  std::uint32_t perm24 = 0;
+  std::uint32_t middle = 0;
+};
+void upstream_phase1_coords(const CubeState& state, Phase1Coords& out) noexcept;
+
 // Phase-1 coordinates (domains: twist 2187, flip 2048, comb 495,
 // perm 24, middle 11880 = comb*24+perm).
 std::uint32_t upstream_twist(const CubeState& state);
@@ -399,6 +422,15 @@ std::uint32_t upstream_flip(const CubeState& state);
 std::uint32_t upstream_comb495(const CubeState& state);
 std::uint32_t upstream_perm24(const CubeState& state);
 std::uint32_t upstream_middle_layer(const CubeState& state);
+// Phase-2 bundle (single to_piece_cube pass). Phase-2 distance
+// heuristics evaluate per search node; one pass instead of three.
+struct Phase2Coords {
+  std::uint32_t corner_perm = 0;  // 40320
+  std::uint32_t ud_perm = 0;      // 40320
+  std::uint32_t slice_perm = 0;   // 24
+};
+void upstream_phase2_coords(const CubeState& state, Phase2Coords& out) noexcept;
+
 // Phase-2 coordinates (domains 40320 / 40320 / 24).
 std::uint32_t upstream_corner_perm(const CubeState& state);
 std::uint32_t upstream_ud_perm(const CubeState& state);
@@ -419,12 +451,37 @@ std::uint64_t phase2_index(std::uint32_t class2768, std::uint32_t ud_perm,
 // Directory resolution / fallback (CLI plumbing). The integrator wires
 // --tables-dir in src/main.cpp and src/visualiser.cpp; this module only
 // exposes the API (it must NOT edit those files).
-// Default is ".\tables" (tables) per task scope.
+//
+// Default discovery order (no flag needed; each entry wins over later):
+//   1. explicit --tables-dir / --data-dir flag, else env
+//      RUBIK_TABLES_DIR / RUBIK_DATA_DIR, else set_tables_dir() override
+//      (set by the CLI only when a flag is present);
+//   2. ./tables/ (current working directory);
+//   3. build/tables/ (current working directory — where the gitignored
+//      11.8 GB table set lives in this repo);
+//   4. <executable-dir>/tables/ then <executable-dir>/../tables/;
+//   5. legacy relative paths: ./tables, ../tables, tables.
+// If none contains cornerHeuristicHTM, resolve falls back to
+// default_tables_dir() (".\tables") and twophase keeps h=0 + Timeout
+// (never an error). The same order is printed by `--help` and README.
 // -------------------------------------------------------------------------
 std::filesystem::path default_tables_dir();
 void set_tables_dir(const std::filesystem::path& dir);
 std::filesystem::path resolve_tables_dir();
 std::filesystem::path resolve_tables_dir(const std::filesystem::path& explicit_dir);
+
+// Testable helpers (no global state; safe for mocked dirs).
+bool dir_contains_tables(const std::filesystem::path& dir);
+std::filesystem::path executable_dir();
+std::vector<std::filesystem::path> tables_discovery_candidates(
+    const std::filesystem::path& cwd,
+    const std::filesystem::path& exe_dir);
+std::filesystem::path first_tables_dir(
+    const std::vector<std::filesystem::path>& candidates);
+std::filesystem::path discover_tables_dir(
+    const std::filesystem::path& explicit_dir,
+    const std::filesystem::path& cwd,
+    const std::filesystem::path& exe_dir);
 // Scan argv for `--tables-dir <path>` (integrator helper). Returns true
 // and sets out when found; the value is used exactly (no fallback).
 bool extract_tables_dir_flag(int argc, char* const argv[], std::filesystem::path& out);

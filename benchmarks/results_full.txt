@@ -1,8 +1,8 @@
 rubik-solver fuzz benchmark (SPEC section 10)
-seed_base: 20261108 (per-method seed = seed_base + offset; offsets cfop=0 roux=100000 zz=200000 heise=300000 optimal=400000)
+seed_base: 20261108 (per-method seed = seed_base + offset; offsets cfop=0 roux=100000 zz=200000 heise=300000)
 requested_trials_per_method: 1000
-scramble: 25 random face moves (18-face pool, no same-face repeat) for human methods; 10 for optimal; per-method mt19937
-options: human timeout_ms=30000 max_depth=30 thread_count=1 | optimal timeout_ms=60000 max_depth=20 thread_count=4
+scramble: 25 random face moves (18-face pool, no same-face repeat); per-method mt19937
+options: human timeout_ms=30000 max_depth=30 thread_count=1
 verify: refsim solved+scramble+solution==solved; timing excludes scramble+verify, excludes warmup; warmup_ms per method below
 total_wall_sec: 4577.4
 
@@ -13,7 +13,6 @@ cfop     |   1000 |      1000 | 100.00% |        0 |        0 |          0 |    
 roux     |   1000 |       989 |  98.90% |       11 |       11 |          0 |           0 |     36.56 |        27 |        45 |  1953.71 |    321.59 |  8541.20 | 26908.39
 zz       |   1000 |      1000 | 100.00% |        0 |        0 |          0 |           0 |     48.29 |        29 |        59 |   206.16 |     35.31 |   941.64 | 12299.03
 heise    |   1000 |       999 |  99.90% |        1 |        1 |          0 |           0 |     75.48 |        33 |        98 |  1752.72 |    237.19 |  8827.82 | 28697.36
-optimal  |   1000 |      1000 | 100.00% |        0 |        0 |          0 |           0 |      9.58 |         4 |        10 |     0.96 |      0.80 |     1.93 |     9.74
 
 Per-method detail:
 - cfop: seed=20261108 scramble_depth=25 timeout_ms=30000 max_depth=30 warmup_ms=13312.5
@@ -40,7 +39,3 @@ Per-method detail:
   slowest_success: trial=730 ms=28697.4 moves=94 scramble="R L D L' U R F U' B' D U' D2 L' R U' L' U2 F2 B' R L D' R D2 U2"
   sample_failures (first 5):
     trial=347 reason=Timeout ms=30000.3 scramble="F B L' D' B D' B D2 B' R2 B F B L2 U F' D2 R' L B2 F2 U2 D F' D"
-- optimal: seed=20661108 scramble_depth=10 timeout_ms=60000 max_depth=20 warmup_ms=4392.2
-  status: completed attempted=1000 (requested=1000) method_wall_sec=5.5
-  counts: successes=1000 failures=0 timeouts=0 database_missing=0 unsolvable=0 cancelled=0 other=0 verify_failures=0
-  slowest_success: trial=498 ms=9.7 moves=10 scramble="B2 F2 L F2 L' F2 B2 L2 B2 R2"
