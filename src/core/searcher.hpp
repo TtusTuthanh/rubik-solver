@@ -1,10 +1,12 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <concepts>
 #include <cstdint>
 #include <expected>
+#include <mutex>
 #include <stop_token>
 #include <thread>
 #include <utility>
@@ -49,13 +51,25 @@ class IdaSearcher {
   static constexpr int kAbortNone = 0;
   static constexpr int kAbortTimeout = 1;
   static constexpr int kAbortCancelled = 2;
+  // Upper sentinel for bestExceed_; INT_MAX is overflow-safe for tiny bounds.
+  static constexpr int kInf = 1 << 28;
 
   IdaSearcher(const std::vector<int>* allowed, Apply apply, Goal goal,
               Heuristic heuristic)
       : allowed_(allowed),
         apply_(std::move(apply)),
         goal_(std::move(goal)),
-        heuristic_(std::move(heuristic)) {}
+        heuristic_(std::move(heuristic)),
+        found_flag_(std::make_shared<std::atomic<bool>>(false)) {}
+
+  // Constructor for parallel search with shared found_flag (for root-split across threads).
+  IdaSearcher(const std::vector<int>* allowed, Apply apply, Goal goal,
+              Heuristic heuristic, std::shared_ptr<std::atomic<bool>> found_flag)
+      : allowed_(allowed),
+        apply_(std::move(apply)),
+        goal_(std::move(goal)),
+        heuristic_(std::move(heuristic)),
+        found_flag_(std::move(found_flag)) {}
 
   // -- Configuration ---------------------------------------------------------
   void setDeadline(std::chrono::steady_clock::time_point deadline) {
@@ -98,9 +112,12 @@ class IdaSearcher {
   // (f <= bound) candidates are ordered and expanded.
   [[nodiscard]] bool dfs(const S& state, int g, int bound) {
     if (found_) return true;
+    // Early abort: if another thread found a solution at this threshold, stop.
+    if (found_flag_ && found_flag_->load(std::memory_order_acquire)) return false;
     if (goal_(state)) {
       solution_ = path_;
       found_ = true;
+      if (found_flag_) found_flag_->store(true, std::memory_order_release);
       return true;
     }
     ++nodes_;
@@ -108,6 +125,8 @@ class IdaSearcher {
     // a pre-stopped token) and then every 1024 nodes.
     if (g == 0 || (nodes_ & 0x3FFu) == 0u) {
       if (pollAbort()) return false;
+      // Also check the shared found_flag at poll points.
+      if (found_flag_ && found_flag_->load(std::memory_order_acquire)) return false;
     }
 
     const int h = heuristic_(state);
@@ -137,6 +156,7 @@ class IdaSearcher {
           threadCount_ > 1 && g == 0 && n > 1;
       if (!parallelRoot) {
         for (std::size_t i = 0; i < n; ++i) {
+          if (found_flag_ && found_flag_->load(std::memory_order_acquire)) return false;
           const int m = (*allowed_)[i];
           Cand& c = cands[i];
           c.move = m;
@@ -150,12 +170,15 @@ class IdaSearcher {
         // plain std::sort, so the DFS order and returned solution are
         // identical to the single-threaded path.
         const int nt = (std::min)(threadCount_, static_cast<int>(n));
+        std::atomic<bool> should_abort(false);
         auto worker = [&](int t) {
           const std::size_t begin = static_cast<std::size_t>(t) * n /
-                                    static_cast<std::size_t>(nt);
+                                      static_cast<std::size_t>(nt);
           const std::size_t end = static_cast<std::size_t>(t + 1) * n /
-                                  static_cast<std::size_t>(nt);
+                                    static_cast<std::size_t>(nt);
           for (std::size_t i = begin; i < end; ++i) {
+            if (should_abort.load(std::memory_order_acquire)) return;
+            if (found_flag_ && found_flag_->load(std::memory_order_acquire)) return;
             const int m = (*allowed_)[i];
             Cand& c = cands[i];
             c.move = m;
@@ -221,11 +244,10 @@ class IdaSearcher {
       return std::unexpected(SolveError::Unsolvable);
     }
     int bound = (initialBound < 0) ? heuristic_(start) : initialBound;
-    // Upper sentinel used below; INT_MAX is overflow-safe for tiny bounds.
-    const int kInf = 1 << 28;
     while (bound <= maxDepth) {
       bestExceed_ = kInf;
       path_.clear();
+      found_flag_->store(false, std::memory_order_release);
       if (dfs(start, 0, bound)) {
         return solution_;
       }
@@ -261,6 +283,7 @@ class IdaSearcher {
   Apply apply_;
   Goal goal_;
   Heuristic heuristic_;
+  std::shared_ptr<std::atomic<bool>> found_flag_ = std::make_shared<std::atomic<bool>>(false);
   std::vector<int> path_;
   std::vector<int> solution_;
   bool found_ = false;

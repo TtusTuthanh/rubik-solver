@@ -32,7 +32,12 @@ add_library(rubik_core
 target_include_directories(rubik_core PUBLIC src)
 target_compile_features(rubik_core PUBLIC cxx_std_23)
 
-add_library(rubik_tables src/tables/tables_loader.cpp src/tables/adapter.cpp)
+add_library(rubik_tables
+  src/tables/tables_loader.cpp
+  src/tables/adapter.cpp
+  src/tables/stage_pdb.cpp
+  src/tables/move_pruning.cpp
+)
 target_include_directories(rubik_tables PUBLIC src)
 target_compile_features(rubik_tables PUBLIC cxx_std_23)
 target_link_libraries(rubik_tables PUBLIC rubik_core)
@@ -62,16 +67,41 @@ foreach(_t rubik_cfop rubik_roux rubik_zz rubik_heise rubik_twophase)
 endforeach()
 
 if(BUILD_TESTING)
-  add_executable(rubik_core_tests tests/core/test_cube.cpp tests/core/test_validation.cpp)
-  target_include_directories(rubik_core_tests PUBLIC src)
-  target_link_libraries(rubik_core_tests PRIVATE rubik_core gtest_main)
-  add_test(NAME rubik_core_tests COMMAND rubik_core_tests)
+  add_executable(rubik_core_tests_cube tests/core/test_cube.cpp)
+  target_include_directories(rubik_core_tests_cube PUBLIC src)
+  target_link_libraries(rubik_core_tests_cube PRIVATE rubik_core gtest_main)
+  add_test(NAME rubik_core_tests_cube COMMAND rubik_core_tests_cube)
+
+  add_executable(rubik_core_tests_validation tests/core/test_validation.cpp)
+  target_include_directories(rubik_core_tests_validation PUBLIC src)
+  target_link_libraries(rubik_core_tests_validation PRIVATE rubik_core gtest_main)
+  add_test(NAME rubik_core_tests_validation COMMAND rubik_core_tests_validation)
+
+  add_executable(rubik_core_tests_searcher tests/core/test_searcher.cpp)
+  target_include_directories(rubik_core_tests_searcher PUBLIC src)
+  target_link_libraries(rubik_core_tests_searcher PRIVATE rubik_core gtest_main)
+  add_test(NAME rubik_core_tests_searcher COMMAND rubik_core_tests_searcher)
+
+  add_executable(rubik_core_tests_heuristic tests/core/test_heuristic.cpp)
+  target_include_directories(rubik_core_tests_heuristic PUBLIC src)
+  target_link_libraries(rubik_core_tests_heuristic PRIVATE rubik_core rubik_tables gtest_main)
+  add_test(NAME rubik_core_tests_heuristic COMMAND rubik_core_tests_heuristic)
 
   add_executable(rubik_solver_replay_tests tests/integration/test_solver_replay.cpp)
   target_include_directories(rubik_solver_replay_tests PUBLIC src)
   target_link_libraries(rubik_solver_replay_tests PRIVATE
     rubik_core rubik_tables rubik_cfop rubik_roux rubik_zz rubik_heise rubik_twophase gtest_main)
   add_test(NAME rubik_solver_replay_tests COMMAND rubik_solver_replay_tests)
+
+  add_executable(rubik_tables_tests_move_pruning tests/tables/test_move_pruning.cpp)
+  target_include_directories(rubik_tables_tests_move_pruning PUBLIC src)
+  target_link_libraries(rubik_tables_tests_move_pruning PRIVATE rubik_tables rubik_core gtest_main)
+  add_test(NAME rubik_tables_tests_move_pruning COMMAND rubik_tables_tests_move_pruning)
+
+  add_executable(rubik_tables_tests_stage_pdb tests/tables/test_stage_pdb.cpp)
+  target_include_directories(rubik_tables_tests_stage_pdb PUBLIC src)
+  target_link_libraries(rubik_tables_tests_stage_pdb PRIVATE rubik_tables rubik_core gtest_main)
+  add_test(NAME rubik_tables_tests_stage_pdb COMMAND rubik_tables_tests_stage_pdb)
 
   foreach(_m cfop roux zz heise)
     if(TARGET rubik_${_m})
