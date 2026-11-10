@@ -1,0 +1,27 @@
+Remove visualiser/GUI; relocate solver-replay tests
+
+- Delete src/visualiser/{renderer,facelet,main_3d}.{hpp,cpp} (3D ImGui/GLFW/OpenGL GUI)
+- Delete src/visualiser.cpp (terminal ANSI visualiser)
+- Delete tests/visualiser/{test_renderer,test_facelet,test_integration}.cpp
+- Remove GLFW, ImGui, OpenGL FetchContent from CMakeLists.txt
+- Remove rubik_visualiser_renderer, rubik_facelet, rubik-visualiser, rubik-visualiser3d targets
+- Remove visualiser test registrations from CMakeLists.txt
+- Relocate tests/visualiser/test_integration.cpp -> tests/integration/test_solver_replay.cpp
+  (updated to use core parse_facelets/to_facelets/validate_facelets_detailed)
+- Delete tests/visualiser/test_facelet.cpp (tested visualiser-specific validation;
+  core validation has its own tests in tests/core/test_validation.cpp)
+- Delete tests/visualiser/test_renderer.cpp (pure GUI tests)
+- Update README.md: remove Visualiser section, update Tests section
+- Update docs/SPEC.md: remove P5 visualiser reference from forbidden actions
+- Clean up comments referencing visualiser in solver/tables code
+
+Reference scan: no non-GUI production code uses rubik::visualiser::facelets_to_cube
+or cube_to_facelets (core has parse_facelets/to_facelets). TRAP 1 satisfied by deletion.
+TRAP 2 satisfied by relocating solver-replay tests to tests/integration/.
+
+Test count before: 8 suites, 95 tests (core 19, visualiser_tests 13, facelet 14,
+visualiser_integration 6, cfop 11, roux 10, zz 11, heise 11)
+Test count after: 6 suites, 68 tests (core 19, solver_replay 6, cfop 11, roux 10,
+zz 11, heise 11). Delta: -27 tests (13 GUI renderer + 14 visualiser facelet)
+Fresh configure+build without GL/GLFW: PASS
+All ctest: PASS

@@ -80,7 +80,7 @@ Design (inspired by the upstream public solver `tables\` set — licence unknown
 
 ## 11. Actions / stops
 
-Forbidden: `git push`, history rewrites, `sudo`, global installs, out-of-tree edits, unlisted features. Run DB builder in background with log file. Stop + ask: before deleting any file, adding deps beyond GoogleTest, changing frozen interface, resolving conflicting method definitions, starting P5 (visualiser — no GUI dep without approval), if an error persists after 2 attempts, if DB build >30 min, or if work leaves scope.
+Forbidden: `git push`, history rewrites, `sudo`, global installs, out-of-tree edits, unlisted features. Run DB builder in background with log file. Stop + ask: before deleting any file, adding deps beyond GoogleTest, changing frozen interface, resolving conflicting method definitions, if an error persists after 2 attempts, if DB build >30 min, or if work leaves scope.
 
 ## 12. P0 evidence
 

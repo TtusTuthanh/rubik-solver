@@ -449,7 +449,7 @@ std::uint64_t phase2_index(std::uint32_t class2768, std::uint32_t ud_perm,
 
 // -------------------------------------------------------------------------
 // Directory resolution / fallback (CLI plumbing). The integrator wires
-// --tables-dir in src/main.cpp and src/visualiser.cpp; this module only
+// --tables-dir in src/main.cpp; this module only
 // exposes the API (it must NOT edit those files).
 //
 // Default discovery order (no flag needed; each entry wins over later):
