@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <iostream>
 #include <filesystem>
+#include <string>
 
 #include "tables/stage_pdb.hpp"
 #include "tables/stage_config.hpp"
@@ -80,25 +81,16 @@ void testBuildStagePdbSimple() {
   };
   config.allowed_moves = {0, 1};  // +1, -1
   config.goal_states = {CubeState::solved()};  // Not used directly; we use custom encode/decode
-  
+
   // We can't easily test buildStagePdb with CubeState because it requires full cube machinery.
-  // Instead, test the nibble packing logic directly.
+  // Instead, test the nibble packing logic directly -- but through the PRODUCTION
+  // packer (`tables::packNibbleDistances`), not a local re-implementation, so that
+  // the test actually exercises the shipped code.
   std::vector<std::uint8_t> dist = {0, 1, 2, 3, 4, kDbSentinel, kDbSentinel};
   std::size_t num_states = 7;
-  
-  // Nibble-pack manually (same logic as buildStagePdb)
-  std::vector<std::uint8_t> packed((num_states + 1) / 2, 0xFF);
-  for (std::size_t i = 0; i < num_states; ++i) {
-    std::uint8_t v = dist[i];
-    if (v == kDbSentinel) v = 0x0F;
-    std::size_t byte_idx = i >> 1;
-    if ((i & 1) == 0) {
-      packed[byte_idx] = (packed[byte_idx] & 0xF0) | v;
-    } else {
-      packed[byte_idx] = (packed[byte_idx] & 0x0F) | (v << 4);
-    }
-  }
-  
+
+  std::vector<std::uint8_t> packed = rubik::tables::packNibbleDistances(dist);
+
   // Verify unpacking
   for (std::size_t i = 0; i < num_states; ++i) {
     std::uint8_t byte = packed[i >> 1];
@@ -113,13 +105,7 @@ void testBuildStagePdbSimple() {
 void testNibblePackingEdgeCases() {
   // Test odd number of states
   std::vector<std::uint8_t> dist5 = {0, 1, 2, 3, 4};
-  std::vector<std::uint8_t> packed5((5 + 1) / 2, 0xFF);
-  for (std::size_t i = 0; i < 5; ++i) {
-    std::uint8_t v = dist5[i];
-    std::size_t byte_idx = i >> 1;
-    if ((i & 1) == 0) packed5[byte_idx] = (packed5[byte_idx] & 0xF0) | v;
-    else packed5[byte_idx] = (packed5[byte_idx] & 0x0F) | (v << 4);
-  }
+  std::vector<std::uint8_t> packed5 = rubik::tables::packNibbleDistances(dist5);
   CHECK(packed5.size() == 3, "5 states -> 3 bytes");
   CHECK((packed5[0] & 0x0F) == 0, "packed5[0] low nibble = 0");
   CHECK((packed5[0] >> 4) == 1, "packed5[0] high nibble = 1");
@@ -130,16 +116,84 @@ void testNibblePackingEdgeCases() {
   
   // Test even number of states
   std::vector<std::uint8_t> dist4 = {0, 1, 2, 3};
-  std::vector<std::uint8_t> packed4((4 + 1) / 2, 0xFF);
-  for (std::size_t i = 0; i < 4; ++i) {
-    std::uint8_t v = dist4[i];
-    std::size_t byte_idx = i >> 1;
-    if ((i & 1) == 0) packed4[byte_idx] = (packed4[byte_idx] & 0xF0) | v;
-    else packed4[byte_idx] = (packed4[byte_idx] & 0x0F) | (v << 4);
-  }
+  std::vector<std::uint8_t> packed4 = rubik::tables::packNibbleDistances(dist4);
   CHECK(packed4.size() == 2, "4 states -> 2 bytes");
   CHECK(packed4[0] == 0x10, "packed4[0] = 0x10 (0,1)");
   CHECK(packed4[1] == 0x32, "packed4[1] = 0x32 (2,3)");
+}
+
+void testNibbleSentinelDecodesToZero() {
+  // The nibble sentinel 0x0F means "not reached" and must decode to 0.
+  const std::uint8_t packed[1] = {0xFF};
+  CHECK(rubik::tables::unpackNibbleDistance(packed, 0) == 0,
+        "Sentinel nibble (even entry) decodes to 0");
+  CHECK(rubik::tables::unpackNibbleDistance(packed, 1) == 0,
+        "Sentinel nibble (odd entry) decodes to 0");
+  CHECK(rubik::tables::kNibbleUnreached == 0x0F,
+        "Nibble sentinel is 0x0F");
+  CHECK(rubik::tables::kNibbleMaxDistance == 14,
+        "Nibble format's usable distance range ends at 14 (0x0F is the sentinel)");
+}
+
+void testNibblePackerDoesNotContaminateNeighbour() {
+  // BUG-01 regression: a value with bit 4 set must never spill into the
+  // neighbouring nibble.  The old packer OR-ed the raw byte, so 0xFE
+  // overwrote the odd neighbour with 0x0F (the sentinel).
+  std::vector<std::uint8_t> dist = {0xFE, 0x01, 0x02, 0x03};
+  std::vector<std::uint8_t> packed = rubik::tables::packNibbleDistances(dist);
+  CHECK(rubik::tables::unpackNibbleDistance(packed.data(), 0) == 0x0E,
+        "Out-of-range even entry keeps only its low nibble");
+  CHECK(rubik::tables::unpackNibbleDistance(packed.data(), 1) == 0x01,
+        "Odd neighbour is NOT contaminated by the even entry");
+  CHECK(rubik::tables::unpackNibbleDistance(packed.data(), 2) == 0x02,
+        "Second byte's even entry is intact");
+  CHECK(rubik::tables::unpackNibbleDistance(packed.data(), 3) == 0x03,
+        "Second byte's odd entry is intact");
+}
+
+void testNibbleRangeGuardRefusesOverlongPattern() {
+  // A pattern whose true diameter exceeds the nibble format's range must be
+  // rejected loudly, never silently truncated to 14.
+  // `predecessors(cur)` must yield the states that reach `cur` in one move
+  // (the backward neighbours of the goal).
+  const std::size_t kN = 30;
+  std::vector<std::vector<std::uint32_t>> preds(kN);
+  for (std::size_t i = 0; i + 1 < kN; ++i) {
+    preds[i].push_back(static_cast<std::uint32_t>(i + 1));
+  }
+  const std::vector<std::uint32_t> goals = {0};
+
+  bool threw = false;
+  try {
+    (void)rubik::tables::buildNibbleDistanceTable(
+        kN, goals,
+        [&](std::uint32_t idx) -> const std::vector<std::uint32_t>& {
+          return preds[idx];
+        });
+  } catch (const rubik::tables::NibbleRangeExceeded&) {
+    threw = true;
+  }
+  CHECK(threw, "buildNibbleDistanceTable throws when the diameter exceeds 14");
+
+  // A diameter of exactly 14 is representable and must build exactly.
+  const std::size_t kM = 15;
+  std::vector<std::vector<std::uint32_t>> preds15(kM);
+  for (std::size_t i = 0; i + 1 < kM; ++i) {
+    preds15[i].push_back(static_cast<std::uint32_t>(i + 1));
+  }
+  auto packed = rubik::tables::buildNibbleDistanceTable(
+      kM, goals,
+      [&](std::uint32_t idx) -> const std::vector<std::uint32_t>& {
+        return preds15[idx];
+      });
+  bool exact = true;
+  for (std::size_t i = 0; i < kM; ++i) {
+    if (rubik::tables::unpackNibbleDistance(packed.data(), i) !=
+        static_cast<int>(i)) {
+      exact = false;
+    }
+  }
+  CHECK(exact, "A diameter of exactly 14 is stored exactly");
 }
 
 void testPdbFileIO() {
@@ -201,6 +255,9 @@ int main() {
   testBfsDbDirect();
   testBuildStagePdbSimple();
   testNibblePackingEdgeCases();
+  testNibbleSentinelDecodesToZero();
+  testNibblePackerDoesNotContaminateNeighbour();
+  testNibbleRangeGuardRefusesOverlongPattern();
   testPdbFileIO();
   testDisjointGroupVerification();
   

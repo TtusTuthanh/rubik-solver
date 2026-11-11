@@ -103,6 +103,19 @@ if(BUILD_TESTING)
   target_link_libraries(rubik_tables_tests_stage_pdb PRIVATE rubik_tables rubik_core gtest_main)
   add_test(NAME rubik_tables_tests_stage_pdb COMMAND rubik_tables_tests_stage_pdb)
 
+  # Nibble-pack / stage-PDB format tests (BUG-01: nibble-pack overflow).
+  add_executable(rubik_tables_tests_stage_pdb_packing tests/tables/test_stage_pdb_packing.cpp)
+  target_include_directories(rubik_tables_tests_stage_pdb_packing PUBLIC src)
+  target_link_libraries(rubik_tables_tests_stage_pdb_packing PRIVATE rubik_tables rubik_core gtest_main)
+  add_test(NAME rubik_tables_tests_stage_pdb_packing COMMAND rubik_tables_tests_stage_pdb_packing)
+
+  # Structural admissibility gate of the shared heuristic combinator
+  # (BUG-02: SUM without an operator-support check).
+  add_executable(rubik_core_tests_heuristic_guard tests/core/test_heuristic_admissibility_guard.cpp)
+  target_include_directories(rubik_core_tests_heuristic_guard PUBLIC src)
+  target_link_libraries(rubik_core_tests_heuristic_guard PRIVATE rubik_core rubik_tables gtest_main)
+  add_test(NAME rubik_core_tests_heuristic_guard COMMAND rubik_core_tests_heuristic_guard)
+
   foreach(_m cfop roux zz heise)
     if(TARGET rubik_${_m})
       add_executable(rubik_${_m}_tests tests/${_m}/test_${_m}.cpp)

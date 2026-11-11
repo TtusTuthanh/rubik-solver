@@ -10,6 +10,7 @@
 #include "core/interface.hpp"
 #include "core/pdb.hpp"
 #include "core/searcher.hpp"
+#include "tables/move_pruning.hpp"
 
 // -- Toy domain: state is an int on a line, moves are +-1 ------------------
 // Independent of CubeState: exercises the generic searcher directly.
@@ -565,6 +566,200 @@ void testBaselineUnstableSortParity18() {
 
 }  // namespace
 
+// -- Move-pruning policy integration ----------------------------------------
+//
+// Toy domain: FOUR INDEPENDENT Z_4 axes.  Each axis has the three legal
+// non-identity rotations {+1, +2, +3} (mod 4), exactly like a cube face's
+// {U, U', U2}: the composition of two moves of the same axis is again one
+// legal move or the identity, so the same-group redundancy rule is LOSSLESS
+// here.  The axes are independent, so axes 0 and 1 (and axes 2 and 3)
+// commute and the opposite-group rule is lossless too.  The pruning table
+// therefore behaves exactly like the 18-face table does on a real cube.
+namespace {
+struct Axis4 {
+  std::array<int, 4> a{};
+  bool operator==(const Axis4&) const = default;
+};
+
+constexpr int kAxisRot[3] = {1, 2, 3};
+
+auto applyAxis = [](const Axis4& s, int move) -> Axis4 {
+  Axis4 out = s;
+  const int axis = move / 3;
+  const int rot = kAxisRot[move % 3];
+  out.a[static_cast<std::size_t>(axis)] =
+      (out.a[static_cast<std::size_t>(axis)] + rot) % 4;
+  return out;
+};
+
+auto axisGoal = [](const Axis4& s) {
+  return s.a[0] == 0 && s.a[1] == 0 && s.a[2] == 0 && s.a[3] == 0;
+};
+
+// Admissible: one move advances exactly one axis, so every axis that is not
+// at 0 needs at least one more move.
+auto axisHeur = [](const Axis4& s) {
+  int h = 0;
+  for (int v : s.a) {
+    if (v != 0) ++h;
+  }
+  return h;
+};
+
+std::vector<int> axisAllowed() {
+  std::vector<int> allowed;
+  for (int i = 0; i < 12; ++i) allowed.push_back(i);
+  return allowed;
+}
+
+rubik::tables::MovePruningTable axisPruningTable() {
+  std::vector<int> move_group(12);
+  for (int i = 0; i < 12; ++i) {
+    move_group[static_cast<std::size_t>(i)] = i / 3;
+  }
+  // Axes 0 and 1 are declared opposite, axes 2 and 3 are declared opposite;
+  // the relation is normalised symmetrically by the table.
+  const std::vector<rubik::tables::MovePruningTable::Group> groups = {
+      {0, 1}, {1, 0}, {2, 3}, {3, 2}};
+  return rubik::tables::MovePruningTable(axisAllowed(), move_group, groups);
+}
+
+Axis4 axisStart() {
+  Axis4 s;
+  s.a = {1, 1, 1, 1};
+  return s;
+}
+}  // namespace
+
+void testInactivePolicyChangesNothing() {
+  // An explicitly inactive policy must be a strict no-op: identical
+  // solution and identical node count.
+  const std::vector<int> allowed = axisAllowed();
+  Axis4 start = axisStart();
+
+  IdaSearcher<Axis4, decltype(applyAxis), decltype(axisGoal), decltype(axisHeur)>
+      plain(&allowed, applyAxis, axisGoal, axisHeur);
+  auto r_plain = plain.run(start, 12);
+
+  IdaSearcher<Axis4, decltype(applyAxis), decltype(axisGoal), decltype(axisHeur)>
+      inactive(&allowed, applyAxis, axisGoal, axisHeur);
+  inactive.setMovePruning(rubik::core::MovePruningPolicy{});
+  CHECK(!inactive.movePruningActive(), "inactive policy: reported as inactive");
+  auto r_inactive = inactive.run(start, 12);
+
+  CHECK(r_plain.has_value() && r_inactive.has_value(), "inactive policy: both solve");
+  if (r_plain.has_value() && r_inactive.has_value()) {
+    CHECK(*r_plain == *r_inactive, "inactive policy: identical solution");
+    CHECK(plain.nodes() == inactive.nodes(), "inactive policy: identical node count");
+  }
+}
+
+void testPruningPolicyIsLossless() {
+  // With the policy active the search must still return a solution of the
+  // SAME LENGTH (the pruning rules are lossless), and it must expand
+  // strictly fewer nodes.
+  const std::vector<int> allowed = axisAllowed();
+  Axis4 start = axisStart();
+  const auto table = axisPruningTable();
+
+  // (1) SOLVABLE: the solution LENGTH must be preserved exactly.
+  {
+    IdaSearcher<Axis4, decltype(applyAxis), decltype(axisGoal),
+                decltype(axisHeur)>
+        plain(&allowed, applyAxis, axisGoal, axisHeur);
+    auto r_plain = plain.run(start, 12);
+
+    IdaSearcher<Axis4, decltype(applyAxis), decltype(axisGoal),
+                decltype(axisHeur)>
+        pruned(&allowed, applyAxis, axisGoal, axisHeur);
+    pruned.setMovePruning(table.policy());
+    CHECK(pruned.movePruningActive(), "pruning: the policy is active");
+    auto r_pruned = pruned.run(start, 12);
+
+    CHECK(r_plain.has_value() && r_pruned.has_value(), "pruning: both runs solve");
+    if (r_plain.has_value() && r_pruned.has_value()) {
+      CHECK(r_plain->size() == 4, "pruning: the optimal length is 4");
+      CHECK(r_pruned->size() == r_plain->size(),
+            "pruning: the solution LENGTH is preserved (losslessness)");
+    }
+  }
+
+  // (2) The node count is compared on a search that CANNOT find a goal and
+  //     therefore exhausts its whole tree.  The pruned tree is a strict
+  //     subset of the unpruned one (the same-group continuations are never
+  //     generated), so the pruned search MUST expand strictly fewer nodes.
+  //     Comparing the node counts of the SOLVABLE runs instead would depend
+  //     on the order in which each search happens to reach the goal, which
+  //     the pruning is explicitly allowed to change.
+  {
+    auto zero = [](const Axis4&) { return 0; };
+    IdaSearcher<Axis4, decltype(applyAxis), decltype(axisGoal), decltype(zero)>
+        plain0(&allowed, applyAxis, axisGoal, zero);
+    auto r_plain0 = plain0.run(start, 3);
+
+    IdaSearcher<Axis4, decltype(applyAxis), decltype(axisGoal), decltype(zero)>
+        pruned0(&allowed, applyAxis, axisGoal, zero);
+    pruned0.setMovePruning(table.policy());
+    auto r_pruned0 = pruned0.run(start, 3);
+
+    CHECK(!r_plain0.has_value() && !r_pruned0.has_value(),
+          "pruning: depth 3 cannot reach the goal (4 moves are needed)");
+    CHECK(pruned0.nodes() < plain0.nodes(),
+          "pruning: strictly fewer nodes are expanded");
+  }
+}
+
+void testPruningPolicyParallelMatchesSerial() {
+  // With the policy active the parallel root path must return the very same
+  // solution as the serial one.
+  const std::vector<int> allowed = axisAllowed();
+  Axis4 start = axisStart();
+  const auto table = axisPruningTable();
+
+  IdaSearcher<Axis4, decltype(applyAxis), decltype(axisGoal), decltype(axisHeur)>
+      s1(&allowed, applyAxis, axisGoal, axisHeur);
+  s1.setThreadCount(1);
+  s1.setMovePruning(table.policy());
+  auto r1 = s1.run(start, 12);
+
+  IdaSearcher<Axis4, decltype(applyAxis), decltype(axisGoal), decltype(axisHeur)>
+      s4(&allowed, applyAxis, axisGoal, axisHeur);
+  s4.setThreadCount(4);
+  s4.setMovePruning(table.policy());
+  auto r4 = s4.run(start, 12);
+
+  CHECK(r1.has_value() && r4.has_value(), "pruning threads: both solve");
+  if (r1.has_value() && r4.has_value()) {
+    CHECK(*r1 == *r4, "pruning threads: identical solution for tc 1 vs 4");
+    CHECK(s1.nodes() == s4.nodes(), "pruning threads: identical node count");
+  }
+}
+
+void testPruningPolicyWithMismatchedIndexSpaceIsSafe() {
+  // A table over a DIFFERENT move-index space: the searcher's move ids are
+  // outside it, so nothing is ever redundant.  This is the documented,
+  // safe behaviour -- no pruning, no undefined behaviour.
+  const std::vector<int> allowed = axisAllowed();
+  Axis4 start = axisStart();
+  const rubik::tables::MovePruningTable small({0, 1}, {0, 0}, {{0, -1}});
+
+  IdaSearcher<Axis4, decltype(applyAxis), decltype(axisGoal), decltype(axisHeur)>
+      plain(&allowed, applyAxis, axisGoal, axisHeur);
+  auto r_plain = plain.run(start, 12);
+
+  IdaSearcher<Axis4, decltype(applyAxis), decltype(axisGoal), decltype(axisHeur)>
+      mismatched(&allowed, applyAxis, axisGoal, axisHeur);
+  mismatched.setMovePruning(small.policy());
+  auto r_mismatched = mismatched.run(start, 12);
+
+  CHECK(r_plain.has_value() && r_mismatched.has_value(),
+        "mismatched index space: both runs solve");
+  if (r_plain.has_value() && r_mismatched.has_value()) {
+    CHECK(r_plain->size() == r_mismatched->size(),
+          "mismatched index space: same solution length");
+  }
+}
+
 int main() {
   testPdbLookup();
   testBfsDb();
@@ -577,6 +772,10 @@ int main() {
   testHeapFallbackOver32();
   testBaselineParity();
   testBaselineUnstableSortParity18();
+  testInactivePolicyChangesNothing();
+  testPruningPolicyIsLossless();
+  testPruningPolicyParallelMatchesSerial();
+  testPruningPolicyWithMismatchedIndexSpaceIsSafe();
   if (g_failures == 0) {
     std::cout << "ALL TESTS PASSED\n";
     return 0;

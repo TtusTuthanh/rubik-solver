@@ -2,10 +2,12 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <concepts>
 #include <cstdint>
 #include <expected>
+#include <memory>
 #include <mutex>
 #include <stop_token>
 #include <thread>
@@ -47,29 +49,48 @@ concept ApplyFn = requires(const Apply& a, const S& s, int move) {
 // Both rules preserve optimality, so a searcher that skips redundant
 // candidates still returns an optimal solution.
 //
-// The policy is a non-owning view over a flat `num_moves x num_moves` byte
-// table: entry (prev, curr) is non-zero when `curr` is redundant after `prev`.
-// A default-constructed policy is inactive and never prunes.
+// The policy is a NON-OWNING, READ-ONLY view over the pruning table's byte
+// buffer.  It holds a `shared_ptr` to that buffer, so the buffer stays alive
+// for as long as any copy of the policy exists: destroying the table while a
+// policy is in use can no longer cause a use-after-free.
+//
+// LIFETIME AND INDEX-SPACE CONTRACT (also stated at
+// `tables::MovePruningTable::policy()`, the producer side):
+//   * The table must remain alive, and must not be moved-from, destroyed,
+//     reassigned or rebuilt, for as long as any policy derived from it is in
+//     use by an `IdaSearcher`.
+//   * A policy must be RE-OBTAINED from `policy()` after the table is moved
+//     or copied: the copy owns a different buffer object.
+//   * A policy obtained from a MOVED-FROM table is INACTIVE
+//     (`active() == false`) and silently disables pruning.
+//   * The table's move-index space must be the SAME index space as the move
+//     ids in the searcher's `allowed_` list; ids outside it are treated as
+//     "never redundant", so a mismatch silently disables pruning for those
+//     ids rather than failing loudly.
 class MovePruningPolicy {
  public:
   MovePruningPolicy() = default;
-  MovePruningPolicy(const std::uint8_t* table, int num_moves) noexcept
-      : table_(table), num_moves_(num_moves) {}
+  MovePruningPolicy(std::shared_ptr<const std::vector<std::uint8_t>> table,
+                    int num_moves) noexcept
+      : table_(std::move(table)), num_moves_(num_moves) {}
 
-  [[nodiscard]] bool active() const noexcept { return table_ != nullptr; }
+  [[nodiscard]] bool active() const noexcept {
+    return static_cast<bool>(table_);
+  }
 
   // Out-of-range move indices are never redundant.
   [[nodiscard]] bool isRedundant(int prev, int curr) const noexcept {
-    if (table_ == nullptr) return false;
+    if (!table_) return false;
     if (prev < 0 || curr < 0) return false;
     if (prev >= num_moves_ || curr >= num_moves_) return false;
+    const std::vector<std::uint8_t>& table = *table_;
     const std::size_t base =
         static_cast<std::size_t>(prev) * static_cast<std::size_t>(num_moves_);
-    return table_[base + static_cast<std::size_t>(curr)] != 0;
+    return table[base + static_cast<std::size_t>(curr)] != 0;
   }
 
  private:
-  const std::uint8_t* table_ = nullptr;
+  std::shared_ptr<const std::vector<std::uint8_t>> table_;
   int num_moves_ = 0;
 };
 
@@ -122,6 +143,25 @@ class IdaSearcher {
   // is not called and `heuristic_` is not evaluated for it. Leaving the
   // policy inactive preserves the previous behaviour exactly (every allowed
   // move is generated at every node).
+  //
+  // LIFETIME AND INDEX-SPACE CONTRACT (the consumer side; the producer side
+  // is `tables::MovePruningTable::policy()`):
+  //   * `MovePruningPolicy` is a non-owning, read-only view over the pruning
+  //     table's byte buffer. The table must remain alive, and must not be
+  //     moved-from, destroyed, reassigned or rebuilt, for as long as the
+  //     policy is in use by this searcher.
+  //   * A policy must be re-obtained from `policy()` after the table is
+  //     moved or copied.
+  //   * A policy obtained from a moved-from table is inactive
+  //     (`active() == false`) and silently disables pruning.
+  //   * The table's move-index space must be the same index space as the
+  //     move ids in the searcher's `allowed_` list; ids outside it are
+  //     treated as "never redundant", so a mismatch silently disables
+  //     pruning for those ids rather than failing loudly.
+  //
+  // (The policy shares ownership of the buffer, so the buffer itself cannot
+  // be freed while the searcher holds the policy -- but the contract above
+  // still applies to the TABLE's identity and index space.)
   void setMovePruning(const MovePruningPolicy& policy) noexcept {
     pruning_ = policy;
   }
@@ -159,7 +199,16 @@ class IdaSearcher {
   // bound (including dead same-face continuations via huge heuristic)
   // are pruned at the parent and never recursed into; only live
   // (f <= bound) candidates are ordered and expanded.
+  //
+  // INVARIANT: `path_` holds exactly the `g` moves that led to `state`, so
+  // `path_.back()` is the previous move on the current path. `run()` clears
+  // the path and enters with g == 0; the recursion pushes before descending
+  // and pops after the child returns. The invariant is asserted, not merely
+  // documented, because the redundant-move rule depends on `path_.back()`
+  // being the true previous move.
   [[nodiscard]] bool dfs(const S& state, int g, int bound) {
+    assert(path_.size() == static_cast<std::size_t>(g) &&
+           "dfs entered with a g that does not match the path depth");
     if (found_) return true;
     // Early abort: if another thread found a solution at this threshold, stop.
     if (found_flag_ && found_flag_->load(std::memory_order_acquire)) return false;
@@ -229,10 +278,23 @@ class IdaSearcher {
         // plain std::sort, so the DFS order and returned solution are
         // identical to the single-threaded path.
         //
-        // This path only runs at the root (g == 0), where `path_` is empty
-        // and therefore `prune` is false: every allowed move is generated and
-        // each worker owns a disjoint slot range. `num_cands` is therefore
-        // exactly `n` here and is not touched by the workers.
+        // INVARIANT (asserted, not merely documented): this branch is
+        // reachable only at the root (g == 0), where `path_` is empty and
+        // therefore `prune` is false. Every allowed move is generated, so
+        // the workers' allowed-list-indexed slots `cands[i]` coincide
+        // exactly with the serial branch's compacted slots
+        // `cands[num_cands++]`, and `num_cands == n`.
+        //
+        // If this branch were ever extended to g > 0, the two layouts
+        // would DIVERGE (the workers write only the surviving entries into
+        // allowed-index slots while `num_cands = n` would overstate the
+        // count) and the compaction loop below would read UNINITIALISED
+        // `Cand` entries. The assertions below make that a hard failure
+        // instead of a latent undefined-behaviour bug.
+        assert(!prune &&
+               "the parallel root branch requires prune == false (g == 0)");
+        assert(path_.empty() &&
+               "the parallel root branch requires an empty path (g == 0)");
         const int nt = (std::min)(threadCount_, static_cast<int>(n));
         std::atomic<bool> should_abort(false);
         auto worker = [&](int t) {
@@ -260,6 +322,8 @@ class IdaSearcher {
           th.join();
         }
         num_cands = n;
+        assert(num_cands == n &&
+               "the parallel root branch generates every allowed move");
       }
     } else {
       heap.reserve(n);
