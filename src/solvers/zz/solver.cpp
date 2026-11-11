@@ -16,6 +16,7 @@
 #include "core/moves.hpp"
 #include "core/pdb.hpp"
 #include "core/searcher.hpp"
+#include "tables/move_pruning.hpp"
 
 namespace rubik::zz {
 
@@ -765,6 +766,26 @@ const Pdbs& getPdbs() {
 }
 
 // ---------------------------------------------------------------------------
+// Redundant-move pruning for the ZZ {R,L,U} alphabet.
+// Two lossless Korf (1997) rules for the face-turn metric:
+//   * two consecutive turns of the same face compose to a single turn (or
+//     the identity), so no optimal solution contains them;
+//   * opposite faces commute on disjoint cubies (R and L move disjoint
+//     cubie sets, so RL == LR), hence only one of the two consecutive orders
+//     needs to be kept.
+// The table prunes same-face continuations and exactly ONE order of each
+// opposite pair (R before L is kept; L before R is pruned).  It never
+// forbids both orders of an opposite pair, so optimal solution length is
+// preserved.  num_moves_ is the full 18-face space so every zz move id
+// (max 14) is in range; only pairs whose both moves are in zzMoveIndices()
+// are marked redundant.
+// ---------------------------------------------------------------------------
+const tables::MovePruningTable& zzPruningTable() {
+  static const tables::MovePruningTable table(zzMoveIndices());
+  return table;
+}
+
+// ---------------------------------------------------------------------------
 // Validity (face moves keep centres fixed, so inputs must have them fixed).
 // ---------------------------------------------------------------------------
 int permParity(const std::uint8_t* perm, int n) {
@@ -904,6 +925,12 @@ std::expected<std::vector<int>, SolveError> runStage(
   searcher.setThreadCount(threadCount);
   if (hasDeadline) searcher.setDeadline(deadline);
   searcher.setStopToken(externalToken);
+  // Lossless redundant-move pruning: skips generating same-face continuations
+  // and one canonical order of the commuting R/L opposite pair.  Candidates
+  // never generated are never scored, so this is pure speed with no
+  // optimality cost (same-face was already dead via the heuristic trick;
+  // the newly pruned L->R order is provably equal-cost to R->L).
+  searcher.setMovePruning(zzPruningTable().policy());
   const SearchState root{start, -1, false};
   auto result = searcher.run(root, stageLimit);
   if (result) return result;

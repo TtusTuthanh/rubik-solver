@@ -359,6 +359,43 @@ TEST(Zz, MaxDepthRespected) {
   EXPECT_EQ(res.error(), SolveError::Timeout);
 }
 
+TEST(Zz, DifferentialMoveCountNoRegression) {
+  // Differential / no-regression test: a deterministic batch of depth-25
+  // scrambles, all solved and verified against the independent reference
+  // simulator, with move counts bounded by headroom over the observed
+  // baseline average (~48 moves).
+  //
+  // setMovePruning only removes provably-redundant or equal-cost move
+  // sequences (two same-face turns compose to <=1 turn; R and L commute on
+  // disjoint cubies so RL == LR, and only ONE order of the R/L opposite
+  // pair is pruned -- never both).  Optimal stage length is therefore
+  // preserved: solutions must not get longer, and must always solve.
+  std::mt19937 rng(20261108u);
+  const int kTrials = 25;
+  const int kMaxMoves = 80;
+  int max_moves = 0;
+  for (int trial = 0; trial < kTrials; ++trial) {
+    const std::vector<std::string> scramble = randomScrambleTokens(rng, 25);
+    const CubeState state = scrambleState(scramble);
+    auto res = rubik::zz::solve(state, defaultOptions());
+    ASSERT_TRUE(res.has_value())
+        << "trial " << trial << " scramble: " << joinTokens(scramble)
+        << " error: " << static_cast<int>(res.error());
+    expectMoveSets(*res);
+    expectStagePredicates(state, *res);
+    const int moves = res->total_moves();
+    max_moves = (std::max)(max_moves, moves);
+    EXPECT_LE(moves, kMaxMoves)
+        << "trial " << trial << " scramble: " << joinTokens(scramble);
+    std::string f = refsim::apply_sequence(refsim::solved_facelets(), scramble);
+    f = refsim::apply_sequence(f, solutionTokens(*res));
+    EXPECT_EQ(f, refsim::solved_facelets())
+        << "trial " << trial << " scramble: " << joinTokens(scramble);
+  }
+  std::cout << std::format("zz differential: {} scrambles, max moves {}\n",
+                           kTrials, max_moves);
+}
+
 TEST(Zz, Zzf2lPreservesEolineAndBlocks) {
   const CubeState state = scrambleStateText("R U2 F' D L B' U R2 F");
   auto res = rubik::zz::solve(state, defaultOptions());
