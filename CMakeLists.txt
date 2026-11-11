@@ -111,4 +111,12 @@ if(BUILD_TESTING)
       add_test(NAME rubik_${_m}_tests COMMAND rubik_${_m}_tests)
     endif()
   endforeach()
+
+  # Fuzz/benchmark harness (NOT a ctest test; driven manually, see docs/SPEC.md
+  # sections 10 + 8). Registered so that the baseline and the post-upgrade
+  # measurement are produced by an identical build configuration.
+  add_executable(rubik_fuzz benchmarks/fuzz.cpp)
+  target_include_directories(rubik_fuzz PUBLIC src tests)
+  target_link_libraries(rubik_fuzz PRIVATE
+    rubik_core rubik_cfop rubik_roux rubik_zz rubik_heise)
 endif()

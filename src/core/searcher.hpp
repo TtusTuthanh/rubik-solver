@@ -35,6 +35,44 @@ concept ApplyFn = requires(const Apply& a, const S& s, int move) {
   { a(s, move) } -> std::convertible_to<S>;
 };
 
+// -- Redundant-move pruning ---------------------------------------------------
+
+// Policy describing which moves are redundant when they follow a given move.
+//
+// Korf (1997) uses two lossless rules for the face-turn metric:
+//   * two consecutive turns of the same face compose to a single turn, so no
+//     optimal solution contains them;
+//   * opposite faces commute, so only one of the two consecutive orders need
+//     be kept.
+// Both rules preserve optimality, so a searcher that skips redundant
+// candidates still returns an optimal solution.
+//
+// The policy is a non-owning view over a flat `num_moves x num_moves` byte
+// table: entry (prev, curr) is non-zero when `curr` is redundant after `prev`.
+// A default-constructed policy is inactive and never prunes.
+class MovePruningPolicy {
+ public:
+  MovePruningPolicy() = default;
+  MovePruningPolicy(const std::uint8_t* table, int num_moves) noexcept
+      : table_(table), num_moves_(num_moves) {}
+
+  [[nodiscard]] bool active() const noexcept { return table_ != nullptr; }
+
+  // Out-of-range move indices are never redundant.
+  [[nodiscard]] bool isRedundant(int prev, int curr) const noexcept {
+    if (table_ == nullptr) return false;
+    if (prev < 0 || curr < 0) return false;
+    if (prev >= num_moves_ || curr >= num_moves_) return false;
+    const std::size_t base =
+        static_cast<std::size_t>(prev) * static_cast<std::size_t>(num_moves_);
+    return table_[base + static_cast<std::size_t>(curr)] != 0;
+  }
+
+ private:
+  const std::uint8_t* table_ = nullptr;
+  int num_moves_ = 0;
+};
+
 // -- Shared iterative-deepening A* searcher ----------------------------------
 // Per-stage differences are passed in, never baked in:
 //  - `allowed`           : move-id list for the stage (subclassed sets)
@@ -79,6 +117,17 @@ class IdaSearcher {
   void clearDeadline() { hasDeadline_ = false; }
   void setStopToken(std::stop_token token) { token_ = std::move(token); }
   void setAllowed(const std::vector<int>* allowed) { allowed_ = allowed; }
+  // Optional redundant-move pruning policy. When active, a candidate move
+  // that is redundant after the previous move is never generated: `apply_`
+  // is not called and `heuristic_` is not evaluated for it. Leaving the
+  // policy inactive preserves the previous behaviour exactly (every allowed
+  // move is generated at every node).
+  void setMovePruning(const MovePruningPolicy& policy) noexcept {
+    pruning_ = policy;
+  }
+  [[nodiscard]] bool movePruningActive() const noexcept {
+    return pruning_.active();
+  }
   // thread_count <= 1 (or unsupported) keeps the exact current
   // single-threaded path. For >1, only the root (g==0) candidate
   // evaluation is parallelised (heuristic+apply); the DFS order and the
@@ -145,11 +194,20 @@ class IdaSearcher {
     };
     constexpr std::size_t kStackCap = 32;
     const std::size_t n = allowed_->size();
+    // Redundant-move pruning (Korf 1997). The previous move is the last move
+    // on the current path; at the root there is none. When a pruning policy
+    // is active, a redundant candidate is never generated: `apply_` is not
+    // called and `heuristic_` is not evaluated for it. `num_cands` counts the
+    // candidates actually generated, so the parent-side bound pruning below
+    // only ever inspects live candidates.
+    const int prev_move = path_.empty() ? -1 : path_.back();
+    const bool prune = pruning_.active() && prev_move >= 0;
     // Heap fallback for unusually wide move sets (>32): preserves the exact
     // pre-stack-array semantics; all production stages use <=18.
     std::vector<Cand> heap;
     std::array<Cand, kStackCap> stackBuf{};
     Cand* cands = nullptr;
+    std::size_t num_cands = 0;
     if (n <= kStackCap) {
       cands = stackBuf.data();
       const bool parallelRoot =
@@ -158,7 +216,8 @@ class IdaSearcher {
         for (std::size_t i = 0; i < n; ++i) {
           if (found_flag_ && found_flag_->load(std::memory_order_acquire)) return false;
           const int m = (*allowed_)[i];
-          Cand& c = cands[i];
+          if (prune && pruning_.isRedundant(prev_move, m)) continue;
+          Cand& c = cands[num_cands++];
           c.move = m;
           c.state = apply_(state, m);
           c.h = heuristic_(c.state);
@@ -169,6 +228,11 @@ class IdaSearcher {
         // heuristic/apply over immutable tables. Ordering afterwards is a
         // plain std::sort, so the DFS order and returned solution are
         // identical to the single-threaded path.
+        //
+        // This path only runs at the root (g == 0), where `path_` is empty
+        // and therefore `prune` is false: every allowed move is generated and
+        // each worker owns a disjoint slot range. `num_cands` is therefore
+        // exactly `n` here and is not touched by the workers.
         const int nt = (std::min)(threadCount_, static_cast<int>(n));
         std::atomic<bool> should_abort(false);
         auto worker = [&](int t) {
@@ -195,26 +259,33 @@ class IdaSearcher {
         for (auto& th : pool) {
           th.join();
         }
+        num_cands = n;
       }
     } else {
       heap.reserve(n);
       for (const int m : *allowed_) {
+        if (prune && pruning_.isRedundant(prev_move, m)) continue;
         S child = apply_(state, m);
         heap.push_back(Cand{m, child, heuristic_(child)});
       }
       cands = heap.data();
+      num_cands = heap.size();
     }
     // Parent-side bound pruning (baseline semantics): candidates with
     // f = g+1+h > bound are recorded in bestExceed_ here and excluded from
-    // ordering/recursion. Dead continuations (huge heuristic) are covered
-    // by the same f test, so they never expand. Compaction preserves
-    // allowed-list order among live candidates; std::sort by h (f is
-    // monotonic in h) then reproduces the exact baseline unstable sort
-    // on the same live-candidate sequence (baseline sorts by (f, h),
-    // which is the same comparator relation). No move-index tiebreak is
-    // applied: ties follow the baseline std::sort permutation.
+    // ordering/recursion. Compaction preserves allowed-list order among live
+    // candidates; std::sort by h (f is monotonic in h) then reproduces the
+    // exact baseline unstable sort on the same live-candidate sequence
+    // (baseline sorts by (f, h), which is the same comparator relation). No
+    // move-index tiebreak is applied: ties follow the baseline std::sort
+    // permutation.
+    //
+    // `num_cands` is the number of candidates actually generated; with
+    // redundant-move pruning active it is smaller than `n`, and the skipped
+    // moves are absent from this list entirely (they were never applied and
+    // never scored).
     std::size_t m = 0;
-    for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t i = 0; i < num_cands; ++i) {
       const int ff = g + 1 + cands[i].h;
       if (ff > bound) {
         bestExceed_ = (std::min)(bestExceed_ == 0 ? ff : bestExceed_, ff);
@@ -280,6 +351,7 @@ class IdaSearcher {
 
   const std::vector<int>* allowed_ = nullptr;
   int threadCount_ = 1;
+  MovePruningPolicy pruning_{};
   Apply apply_;
   Goal goal_;
   Heuristic heuristic_;
