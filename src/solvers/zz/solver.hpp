@@ -85,4 +85,11 @@ bool is_last_layer_solved(const CubeState& state);
 std::expected<Solution, SolveError> solve(const CubeState& state,
                                           const SolveOptions& options);
 
+// ---- test accessor (exposed for admissibility tests only) ----
+// Returns the per-stage PDB heuristic for the named stage without exposing
+// the Pdbs struct or the StageKind enum (both live in the anonymous namespace
+// of solver.cpp). stage_name is one of stage_names(); unknown names map to
+// the EPLL stage.
+int stageHeuristicForTest(const std::string& stage_name, const CubeState& s);
+
 }  // namespace rubik::zz

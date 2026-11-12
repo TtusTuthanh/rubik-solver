@@ -423,3 +423,25 @@ TEST(Zz, Zzf2lPreservesEolineAndBlocks) {
   EXPECT_TRUE(rubik::is_solved(applyTokens(
       applyTokens(cur, res->stages[3].moves), res->stages[4].moves)));
 }
+
+TEST(Zz, AdmissibilityGoalPlusK) {
+  // A stage PDB heuristic must be admissible: h(s) <= true stage distance to
+  // the stage goal. From the solved state, k random stage-allowed moves reach
+  // a state at distance <= k, so h(s) <= k for every k in 0..6.
+  const std::vector<std::string> stages = rubik::zz::stage_names();
+  std::mt19937 rng(20261108u);
+  for (const std::string& stage : stages) {
+    const std::vector<std::string> allowed =
+        rubik::zz::allowed_moves_for_stage(stage);
+    ASSERT_FALSE(allowed.empty()) << "stage " << stage << " has no allowed moves";
+    for (int k = 0; k <= 6; ++k) {
+      CubeState s = CubeState::solved();
+      for (int i = 0; i < k; ++i) {
+        s = applyTokens(s, {allowed[static_cast<std::size_t>(rng()) %
+                                       allowed.size()]});
+      }
+      const int h = rubik::zz::stageHeuristicForTest(stage, s);
+      EXPECT_LE(h, k) << stage << " k=" << k;
+    }
+  }
+}

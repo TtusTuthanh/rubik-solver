@@ -1055,4 +1055,26 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
   return sol;
 }
 
+// ---- test accessor (exposed for admissibility tests only) ----
+// Maps stage_name -> StageKind (mirrors the stageKindFor logic in solve()),
+// fetches the PDBs via getPdbs(), and returns heuristicFor(kind, pdbs, s).
+// Pdbs and StageKind live in the anonymous namespace; this accessor keeps
+// them unexposed while letting tests check heuristic admissibility.
+int stageHeuristicForTest(const std::string& stage_name, const CubeState& s) {
+  const Pdbs& pdbs = getPdbs();
+  StageKind kind;
+  if (stage_name == "eoline") {
+    kind = StageKind::Eoline;
+  } else if (stage_name == "zzf2l_left") {
+    kind = StageKind::Left;
+  } else if (stage_name == "zzf2l_right") {
+    kind = StageKind::Right;
+  } else if (stage_name == "coll") {
+    kind = StageKind::Coll;
+  } else {
+    kind = StageKind::Eppl;
+  }
+  return heuristicFor(kind, pdbs, s);
+}
+
 }  // namespace rubik::zz
