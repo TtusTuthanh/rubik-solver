@@ -125,6 +125,21 @@ if(BUILD_TESTING)
     endif()
   endforeach()
 
+  # CFOP heuristic admissibility spot-checks (goal + k random moves, k=0..6).
+  add_executable(rubik_cfop_admissibility_tests tests/cfop/test_admissibility.cpp)
+  target_include_directories(rubik_cfop_admissibility_tests PUBLIC src)
+  target_link_libraries(rubik_cfop_admissibility_tests PRIVATE
+    rubik_cfop rubik_core gtest_main)
+  add_test(NAME rubik_cfop_admissibility_tests COMMAND rubik_cfop_admissibility_tests)
+
+  # CFOP differential test vs. baseline (F-06): optimized solver always
+  # solves and uses no more moves than the baseline per scramble.
+  add_executable(rubik_cfop_differential_tests tests/cfop/test_differential.cpp)
+  target_include_directories(rubik_cfop_differential_tests PUBLIC src)
+  target_link_libraries(rubik_cfop_differential_tests PRIVATE
+    rubik_cfop rubik_core gtest_main)
+  add_test(NAME rubik_cfop_differential_tests COMMAND rubik_cfop_differential_tests)
+
   # Fuzz/benchmark harness (NOT a ctest test; driven manually, see docs/SPEC.md
   # sections 10 + 8). Registered so that the baseline and the post-upgrade
   # measurement are produced by an identical build configuration.
