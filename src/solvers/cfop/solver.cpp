@@ -724,18 +724,20 @@ const Pdbs& getPdbs() {
 // ---------------------------------------------------------------------------
 std::uint32_t edgePatternIdx(const CubeState& s,
                              const std::array<int, 4>& ids) {
+  // Inverse position map: ePos[cubie] = position. Built once per state so each
+  // cubie lookup is O(1) instead of a linear scan (Heise's O(1) index-update
+  // pattern, src/solvers/heise/solver.cpp:1054-1064).
+  std::array<std::uint8_t, 12> ePos{};
+  for (int p = 0; p < 12; ++p) {
+    ePos[static_cast<std::size_t>(s.ep[static_cast<std::size_t>(p)])] =
+        static_cast<std::uint8_t>(p);
+  }
   std::array<std::uint8_t, 4> pos{};
   std::array<std::uint8_t, 4> ori{};
   for (int d = 0; d < 4; ++d) {
     const int cubie = ids[static_cast<std::size_t>(d)];
-    int at = -1;
-    for (int p = 0; p < 12; ++p) {
-      if (s.ep[static_cast<std::size_t>(p)] == cubie) {
-        at = p;
-        break;
-      }
-    }
-    pos[static_cast<std::size_t>(d)] = static_cast<std::uint8_t>(at);
+    const std::uint8_t at = ePos[static_cast<std::size_t>(cubie)];
+    pos[static_cast<std::size_t>(d)] = at;
     ori[static_cast<std::size_t>(d)] =
         s.eo[static_cast<std::size_t>(at)];
   }
@@ -744,18 +746,17 @@ std::uint32_t edgePatternIdx(const CubeState& s,
 
 std::uint32_t cornerPatternIdx(const CubeState& s,
                                const std::array<int, 4>& ids) {
+  std::array<std::uint8_t, 8> cPos{};
+  for (int p = 0; p < 8; ++p) {
+    cPos[static_cast<std::size_t>(s.cp[static_cast<std::size_t>(p)])] =
+        static_cast<std::uint8_t>(p);
+  }
   std::array<std::uint8_t, 4> pos{};
   std::array<std::uint8_t, 4> ori{};
   for (int d = 0; d < 4; ++d) {
     const int cubie = ids[static_cast<std::size_t>(d)];
-    int at = -1;
-    for (int p = 0; p < 8; ++p) {
-      if (s.cp[static_cast<std::size_t>(p)] == cubie) {
-        at = p;
-        break;
-      }
-    }
-    pos[static_cast<std::size_t>(d)] = static_cast<std::uint8_t>(at);
+    const std::uint8_t at = cPos[static_cast<std::size_t>(cubie)];
+    pos[static_cast<std::size_t>(d)] = at;
     ori[static_cast<std::size_t>(d)] =
         s.co[static_cast<std::size_t>(at)];
   }
@@ -764,49 +765,43 @@ std::uint32_t cornerPatternIdx(const CubeState& s,
 
 std::uint32_t pairPatternIdx(const CubeState& s, int cornerCubie,
                              int edgeCubie) {
-  int cPos = -1;
+  std::array<std::uint8_t, 8> cPos{};
+  std::array<std::uint8_t, 12> ePos{};
   for (int p = 0; p < 8; ++p) {
-    if (s.cp[static_cast<std::size_t>(p)] == cornerCubie) {
-      cPos = p;
-      break;
-    }
+    cPos[static_cast<std::size_t>(s.cp[static_cast<std::size_t>(p)])] =
+        static_cast<std::uint8_t>(p);
   }
-  int ePos = -1;
   for (int p = 0; p < 12; ++p) {
-    if (s.ep[static_cast<std::size_t>(p)] == edgeCubie) {
-      ePos = p;
-      break;
-    }
+    ePos[static_cast<std::size_t>(s.ep[static_cast<std::size_t>(p)])] =
+        static_cast<std::uint8_t>(p);
   }
-  const unsigned cOri = s.co[static_cast<std::size_t>(cPos)];
-  const unsigned eOri = s.eo[static_cast<std::size_t>(ePos)];
+  const std::uint8_t cAt = cPos[static_cast<std::size_t>(cornerCubie)];
+  const std::uint8_t eAt = ePos[static_cast<std::size_t>(edgeCubie)];
+  const unsigned cOri = s.co[static_cast<std::size_t>(cAt)];
+  const unsigned eOri = s.eo[static_cast<std::size_t>(eAt)];
   return static_cast<std::uint32_t>(
-      (((static_cast<unsigned>(cPos) * 3u + cOri) * 24u) +
-       (static_cast<unsigned>(ePos) * 2u + eOri)));
+      (((static_cast<unsigned>(cAt) * 3u + cOri) * 24u) +
+       (static_cast<unsigned>(eAt) * 2u + eOri)));
 }
 
 std::uint32_t pllPermIdx(const CubeState& s) {
-  std::array<std::uint8_t, 4> cPos{};
-  std::array<std::uint8_t, 4> ePos{};
-  for (int d = 0; d < 4; ++d) {
-    int at = -1;
-    for (int p = 0; p < 8; ++p) {
-      if (s.cp[static_cast<std::size_t>(p)] == kUIds[static_cast<std::size_t>(d)]) {
-        at = p;
-        break;
-      }
-    }
-    cPos[static_cast<std::size_t>(d)] = static_cast<std::uint8_t>(at);
-    int eat = -1;
-    for (int p = 0; p < 12; ++p) {
-      if (s.ep[static_cast<std::size_t>(p)] == kUIds[static_cast<std::size_t>(d)]) {
-        eat = p;
-        break;
-      }
-    }
-    ePos[static_cast<std::size_t>(d)] = static_cast<std::uint8_t>(eat);
+  std::array<std::uint8_t, 8> cPos{};
+  std::array<std::uint8_t, 12> ePos{};
+  for (int p = 0; p < 8; ++p) {
+    cPos[static_cast<std::size_t>(s.cp[static_cast<std::size_t>(p)])] =
+        static_cast<std::uint8_t>(p);
   }
-  return cornerRank4(cPos) * 11880u + edgeRank4(ePos);
+  for (int p = 0; p < 12; ++p) {
+    ePos[static_cast<std::size_t>(s.ep[static_cast<std::size_t>(p)])] =
+        static_cast<std::uint8_t>(p);
+  }
+  std::array<std::uint8_t, 4> cPos4{};
+  std::array<std::uint8_t, 4> ePos4{};
+  for (int d = 0; d < 4; ++d) {
+    cPos4[static_cast<std::size_t>(d)] = cPos[static_cast<std::size_t>(kUIds[static_cast<std::size_t>(d)])];
+    ePos4[static_cast<std::size_t>(d)] = ePos[static_cast<std::size_t>(kUIds[static_cast<std::size_t>(d)])];
+  }
+  return cornerRank4(cPos4) * 11880u + edgeRank4(ePos4);
 }
 
 // ---------------------------------------------------------------------------
@@ -915,11 +910,23 @@ int stageHeuristic(StageKind kind, int pairIdx, const Pdbs& pdbs,
     }
     h = (std::max)(h, pdbLookup(pdbs.ollC, cornerPatternIdx(s, kUIds)));
   } else if (kind == StageKind::Oll) {
-    // cross15 + pair15 are exactly 0 once F2L is complete (stage order and
-    // is_oll_solved guarantee it), so they contribute nothing and only cost
-    // two PDB lookups per node.  Drop them: OLL heuristic = max(ollC, ollE,
-    // oriC, oriE, oriBoth).  Dropping terms from a max can only lower h, so
-    // admissibility is preserved.
+    // OLL must orient the last layer AND keep F2L intact. The a15 moves can
+    // disturb the D-layer cross and the four F2L pairs, so cross15/pair15
+    // (exact a15-move distances to restore the cross and each pair) are real,
+    // admissible lower bounds on the remaining OLL cost mid-search. They are
+    // 0 at the OLL start state (F2L complete) but rise as soon as a move
+    // disturbs F2L, which prunes the weak-orientation-only branches that
+    // previously exploded the IDA* tree. Each term is a lower bound on a
+    // required subgoal, and the max of admissible heuristics is admissible,
+    // so stage optimality is preserved.
+    h = (std::max)(h, pdbLookup(pdbs.cross15, edgePatternIdx(s, kCrossIds)));
+    for (int j = 0; j < 4; ++j) {
+      const int cid = 4 + j;
+      const int eid = 8 + j;
+      h = (std::max)(h,
+                     pdbLookup(pdbs.pair15[static_cast<std::size_t>(j)],
+                               pairPatternIdx(s, cid, eid)));
+    }
     h = (std::max)(h, pdbLookup(pdbs.ollC, cornerPatternIdx(s, kUIds)));
     h = (std::max)(h, pdbLookup(pdbs.ollE, edgePatternIdx(s, kUIds)));
     h = (std::max)(h, pdbLookup(pdbs.oriC, cornerOriIndex(s.co)));
