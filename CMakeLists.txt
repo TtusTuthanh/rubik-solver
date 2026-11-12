@@ -140,6 +140,13 @@ if(BUILD_TESTING)
     rubik_cfop rubik_core gtest_main)
   add_test(NAME rubik_cfop_differential_tests COMMAND rubik_cfop_differential_tests)
 
+  # Roux admissibility test: Korf-style PDB heuristic h(state) <= true stage
+  # distance for states k moves (k=0..6) from each stage goal state.
+  add_executable(rubik_roux_tests_admissibility tests/roux/test_admissibility.cpp)
+  target_include_directories(rubik_roux_tests_admissibility PUBLIC src)
+  target_link_libraries(rubik_roux_tests_admissibility PRIVATE rubik_roux rubik_core gtest_main)
+  add_test(NAME rubik_roux_tests_admissibility COMMAND rubik_roux_tests_admissibility)
+
   # Fuzz/benchmark harness (NOT a ctest test; driven manually, see docs/SPEC.md
   # sections 10 + 8). Registered so that the baseline and the post-upgrade
   # measurement are produced by an identical build configuration.
