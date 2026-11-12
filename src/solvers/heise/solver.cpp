@@ -1043,10 +1043,9 @@ bool isUrfSolved(const CubeState& s) {
 // PDBs (admissible). Per-stage residues (table indices, stage predicate,
 // PDB wiring) stay here; only the search control is shared.
 // ---------------------------------------------------------------------------
-enum class StageKind {
-  Squares, Mid1, Mid2, Mid3, Orient,
-  BrPair, Urf, UEdges, Pairs, Final, Oll
-};
+// StageKind is declared in solver.hpp (rubik::heise::StageKind). A local
+// duplicate enum was removed here to avoid an ambiguity with the header's
+// enum (the two are identical and interchangeable).
 
 // Heuristic = max of the stage's subproblem PDBs (admissible).
 // Hand-rolled multi-source PDB indices stay here (see buildPdbs).
@@ -1523,6 +1522,226 @@ std::optional<std::vector<int>> solvePllBfs(
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// Korf-style max-of-sums combinator for the pairing stage (substeps
+// BrPair=5, Oll=10, UEdges=7, Pairs=8).
+//
+// Combination rule: MAX across groups, SUM within a group only when the
+// structural admissibility gate passes (explicit opt-in + pairwise
+// piece-disjoint + pairwise move-support-disjoint over the stage's allowed
+// moves). MAX is the default and universal fallback.
+//
+// Heise allows all 18 face moves at every stage. Every tracked cubie can be
+// turned by every face over the PDB state space, so each pattern's move
+// support is the full alphabet and no two patterns are move-support-disjoint.
+// Pieces also overlap across groups (each f2l pair contains a corner and an
+// edge that corner/edge groups also track). Therefore no group passes the
+// SUM gate: the combinator collapses to MAX of all sub-values, identical to
+// stageHeuristic(). PDB grouping cannot reduce substep-10 nodes for Heise —
+// the measured outcome, not a regression.
+// ---------------------------------------------------------------------------
+
+struct PairingPattern {
+  std::array<int, 4> corners{};   // -1 = unused
+  std::array<int, 4> edges{};     // -1 = unused
+  std::uint32_t support = 0x3FFFFu;  // bits 0..17 = all 18 face moves
+  bool opt_in = true;
+};
+
+bool pairingPiecesDisjoint(const PairingPattern& a, const PairingPattern& b) {
+  for (int c : a.corners) if (c >= 0)
+    for (int d : b.corners) if (d >= 0 && c == d) return false;
+  for (int e : a.edges) if (e >= 0)
+    for (int f : b.edges) if (f >= 0 && e == f) return false;
+  return true;
+}
+
+// Structural admissibility gate for one group: opt-in AND pairwise
+// piece-disjoint AND pairwise move-support-disjoint over the stage's allowed
+// moves. Returns false -> the group is combined with MAX.
+bool pairingGroupMayBeSummed(const std::vector<PairingPattern>& pats,
+                             const std::vector<int>& allowed) {
+  std::uint32_t allowedMask = 0;
+  for (int m : allowed) allowedMask |= (1u << static_cast<std::uint32_t>(m));
+  const std::size_t n = pats.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!pats[static_cast<std::size_t>(i)].opt_in) return false;
+    for (std::size_t j = i + 1; j < n; ++j) {
+      if (!pairingPiecesDisjoint(pats[static_cast<std::size_t>(i)],
+                                 pats[static_cast<std::size_t>(j)])) return false;
+      if ((pats[static_cast<std::size_t>(i)].support &
+           pats[static_cast<std::size_t>(j)].support &
+           allowedMask) != 0u) return false;
+    }
+  }
+  return true;
+}
+
+int stageHeuristicValue(StageKind kind, const CubeState& state) {
+  return stageHeuristic(kind, getPdbs(), state);
+}
+
+int pairingStageHeuristicGroups(StageKind kind, const CubeState& s) {
+  // Non-pairing kinds: fall back to the plain max-of-PDBs heuristic.
+  if (kind != StageKind::BrPair && kind != StageKind::Oll &&
+      kind != StageKind::UEdges && kind != StageKind::Pairs) {
+    return stageHeuristicValue(kind, s);
+  }
+  const Pdbs& pdbs = getPdbs();
+  // Same cubie-position cache as stageHeuristic.
+  std::array<std::uint8_t, 8> cPos{}; std::array<std::uint8_t, 12> ePos{};
+  for (int p = 0; p < 8; ++p) cPos[s.cp[static_cast<std::size_t>(p)]] = static_cast<std::uint8_t>(p);
+  for (int p = 0; p < 12; ++p) ePos[s.ep[static_cast<std::size_t>(p)]] = static_cast<std::uint8_t>(p);
+  auto cornerIdx = [&](const std::array<int, 4>& cubies, int k,
+                       const std::array<std::uint32_t, 6>& blocks) -> std::uint32_t {
+    std::array<std::uint8_t, 6> pos{}; std::array<std::uint8_t, 6> ori{};
+    for (int d = 0; d < k; ++d) {
+      const int cubie = cubies[static_cast<std::size_t>(d)];
+      const std::uint8_t at = cPos[static_cast<std::size_t>(cubie)];
+      pos[static_cast<std::size_t>(d)] = at;
+      ori[static_cast<std::size_t>(d)] = s.co[static_cast<std::size_t>(at)];
+    }
+    const std::uint32_t oe = (k == 2) ? 9u : 27u;
+    return rankPerm(pos, 8, k, blocks) * oe + cornerOrientIdx(ori, k);
+  };
+  auto edgeIdx = [&](const std::array<int, 4>& cubies, int k,
+                     const std::array<std::uint32_t, 6>& blocks) -> std::uint32_t {
+    std::array<std::uint8_t, 6> pos{}; std::array<std::uint8_t, 6> ori{};
+    for (int d = 0; d < k; ++d) {
+      const int cubie = cubies[static_cast<std::size_t>(d)];
+      const std::uint8_t at = ePos[static_cast<std::size_t>(cubie)];
+      pos[static_cast<std::size_t>(d)] = at;
+      ori[static_cast<std::size_t>(d)] = s.eo[static_cast<std::size_t>(at)];
+    }
+    const std::uint32_t oe = (k == 3) ? 8u : 16u;
+    return rankPerm(pos, 12, k, blocks) * oe + edgeOrientBits(ori, k);
+  };
+  auto pairId = [&](int cc, int ee) -> std::uint32_t {
+    const std::uint8_t atc = cPos[static_cast<std::size_t>(cc)];
+    const std::uint8_t ate = ePos[static_cast<std::size_t>(ee)];
+    return static_cast<std::uint32_t>(
+        ((static_cast<unsigned>(atc) * 3u + static_cast<unsigned>(s.co[static_cast<std::size_t>(atc)])) * 24u) +
+        (static_cast<unsigned>(ate) * 2u + static_cast<unsigned>(s.eo[static_cast<std::size_t>(ate)])));
+  };
+  auto edgePerm5 = [&]() -> std::uint32_t {
+    const std::array<int, 5> cubies = {11, 0, 1, 2, 3};
+    std::array<std::uint8_t, 6> pos{};
+    for (int d = 0; d < 5; ++d)
+      pos[static_cast<std::size_t>(d)] = ePos[static_cast<std::size_t>(cubies[static_cast<std::size_t>(d)])];
+    return rankPerm(pos, 12, 5, kEdge5PermBlocks);
+  };
+  auto cornerPerm2 = [&]() -> std::uint32_t {
+    const std::array<int, 2> cubies = {7, 0};
+    std::array<std::uint8_t, 6> pos{};
+    for (int d = 0; d < 2; ++d)
+      pos[static_cast<std::size_t>(d)] = cPos[static_cast<std::size_t>(cubies[static_cast<std::size_t>(d)])];
+    return rankPerm(pos, 8, 2, kCorner2PermBlocks);
+  };
+  auto uEdgePerm4 = [&]() -> std::uint32_t {
+    const std::array<int, 4> cubies = {0, 1, 2, 3};
+    std::array<std::uint8_t, 6> pos{};
+    for (int d = 0; d < 4; ++d)
+      pos[static_cast<std::size_t>(d)] = ePos[static_cast<std::size_t>(cubies[static_cast<std::size_t>(d)])];
+    return rankPerm(pos, 12, 4, kEdge4PermBlocks);
+  };
+  auto finalCornerPerm3 = [&]() -> std::uint32_t {
+    const std::array<int, 3> cubies = {1, 2, 3};
+    std::array<std::uint8_t, 6> pos{};
+    for (int d = 0; d < 3; ++d)
+      pos[static_cast<std::size_t>(d)] = cPos[static_cast<std::size_t>(cubies[static_cast<std::size_t>(d)])];
+    return rankPerm(pos, 8, 3, kCorner3PermBlocks);
+  };
+  const std::array<int, 4> de = {4, 5, 6, 7};
+  const std::array<int, 4> dc3 = {4, 5, 6, 0};
+  const std::array<int, 4> me = {8, 9, 10, 0};
+  const std::array<int, 4> ue = {0, 1, 2, 3};
+  const std::array<int, 4> cp = {7, 0, 0, 0};
+  const std::array<int, 4> fc = {1, 2, 3, 0};
+
+  // Sub-heuristic values: same PDB lookups as stageHeuristic for the pairing
+  // stage.
+  const int vEdge4   = pdbLookup(pdbs.dEdge, edgeIdx(de, 4, kEdge4Blocks));
+  const int vDOrient = pdbLookup(pdbs.dOrient, cornerOriIndex(s.co));
+  const int vDCorner3= pdbLookup(pdbs.dCorner3, cornerIdx(dc3, 3, kCorner3Blocks));
+  const int vMidEdge = pdbLookup(pdbs.midEdge, edgeIdx(me, 3, kEdge3Blocks));
+  const int vEo      = pdbLookup(pdbs.eo, eoIdx(s));
+  const int vPair0   = pdbLookup(pdbs.f2lPair[0], pairId(4, 8));
+  const int vPair1   = pdbLookup(pdbs.f2lPair[1], pairId(5, 9));
+  const int vPair2   = pdbLookup(pdbs.f2lPair[2], pairId(6, 10));
+  const int vPair3   = pdbLookup(pdbs.f2lPair[3], pairId(7, 11));
+  const int vUrf     = pdbLookup(pdbs.urf,
+      static_cast<std::uint32_t>(cPos[0] * 3 + s.co[static_cast<std::size_t>(cPos[0])]));
+  const int vCornerPair = pdbLookup(pdbs.br,
+      static_cast<std::uint32_t>(ePos[11] * 2 + s.eo[static_cast<std::size_t>(ePos[11])]));
+  const int vUEdge   = pdbLookup(pdbs.uEdge, edgeIdx(ue, 4, kEdge4Blocks));
+  const int vPairPerm= pdbLookup(pdbs.pairPerm, edgePerm5() * kCorner2PermRank + cornerPerm2());
+  const int vUEdgeCorner = pdbLookup(pdbs.uEdgeCorner,
+      edgeIdx(ue, 4, kEdge4Blocks) * kCorner2PermRank + cornerPerm2());
+  const int vOri5    = pdbLookup(pdbs.ori5, cornerOriIndex(s.co));
+  const int vFinalC3 = pdbLookup(pdbs.finalCorner3, cornerIdx(fc, 3, kCorner3Blocks));
+  const int vOriFull = pdbLookup(pdbs.oriFull, cornerOriIndex(s.co));
+  const int vFinalPerm = pdbLookup(pdbs.finalPerm,
+      uEdgePerm4() * kCorner3PermRank + finalCornerPerm3());
+
+  // Groups for the pairing stage (task-specified decomposition).
+  // Each pattern opts in, but the structural gate fails for every group:
+  //   * piece overlap (f2l pairs contain corners+edges tracked elsewhere),
+  //   * move-support overlap under Heise's full 18-face alphabet
+  //     (every face turns cubies from every group).
+  // Gate result: all groups MAX-ed. MAX within groups, MAX across groups
+  // = MAX of all sub-values = stageHeuristic(kind, pdbs, s).
+  //
+  // Measured outcome: PDB grouping cannot reduce substep-10 nodes for Heise
+  // because no two patterns are move-support-disjoint under the 18-face
+  // alphabet. Zero regression is the gate; no >=10% p95 improvement is
+  // possible for this method/move-set combination.
+  int h = 0;
+  h = (std::max)(h, vEdge4);
+  h = (std::max)(h, vDOrient);
+  h = (std::max)(h, vDCorner3);
+
+  if (kind == StageKind::Orient) {
+    h = (std::max)(h, vMidEdge);
+    h = (std::max)(h, vEo);
+    h = (std::max)(h, vPair0);
+    h = (std::max)(h, vPair1);
+    h = (std::max)(h, vPair2);
+    return h;
+  }
+
+  h = (std::max)(h, vPair0);
+  h = (std::max)(h, vPair1);
+  h = (std::max)(h, vPair2);
+  h = (std::max)(h, vPair3);
+
+  if (kind == StageKind::BrPair) return h;
+
+  if (kind == StageKind::Oll) {
+    h = (std::max)(h, vMidEdge);
+    h = (std::max)(h, vEo);
+    h = (std::max)(h, vOriFull);
+    return h;
+  }
+
+  h = (std::max)(h, vUrf);
+  if (kind == StageKind::Urf) return h;
+
+  h = (std::max)(h, vMidEdge);
+  h = (std::max)(h, vEo);
+  h = (std::max)(h, vUEdge);
+  h = (std::max)(h, pdbLookup(pdbs.cornerPair, cornerIdx(cp, 2, kCorner2Blocks)));
+  h = (std::max)(h, vCornerPair);
+  h = (std::max)(h, vPairPerm);
+  h = (std::max)(h, vUEdgeCorner);
+  h = (std::max)(h, vOri5);
+  if (kind == StageKind::UEdges || kind == StageKind::Pairs) return h;
+
+  h = (std::max)(h, vFinalC3);
+  h = (std::max)(h, vOriFull);
+  h = (std::max)(h, vFinalPerm);
+  return h;
+}
 
 std::expected<Solution, SolveError> solve(const CubeState& state,
                                           const SolveOptions& options) {

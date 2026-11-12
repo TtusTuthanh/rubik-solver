@@ -1,0 +1,118 @@
+GRAPHIFY VERIFIER REPORT - rubik-solver
+Corpus root: H:\rubik-solver
+Scope: read-only verification; no rebuild. Only writes in graphify-out/.
+
+## METRICS (from graph.json + .graphify_extract.json via code)
+Total nodes (graph.json): 1544
+Total edges/links (graph.json): 3866
+.graphify_extract.json nodes: 1544 edges: 4295
+Confidence counts: {'EXTRACTED': 3548, 'INFERRED': 317, 'AMBIGUOUS': 1}
+INFERRED-edge ratio: 317/3866 = 0.0820 (8.20%)
+Isolated nodes (degree 0): 9
+Nodes with degree <=1: 595
+Communities count (analysis): 65
+Distinct community labels present (65):
+  - 3D Math Matrices
+  - ANSI Terminal Visualiser
+  - Animated Cube Replay
+  - Architecture Documentation History
+  - Benchmark Args Parsing
+  - Benchmark Config
+  - Benchmark Statistics Tracking
+  - Browser Check Records
+  - CFOP Method
+  - CFOP Solver Pruning
+  - CFOP Solver Tests
+  - CLI Args Parser
+  - Core Interface Headers
+  - Cube Moves Tests
+  - Cube Rotation Basis
+  - Cube State Operations
+  - Cubie Move Data
+  - Facelet Conversion Validation
+  - Facelet Validation Core
+  - Facelet Validation Tests
+  - Fast Apply Interface
+  - Finalize Review Records
+  - Fuzz Benchmark Documentation
+  - Fuzz Benchmark Harness
+  - Fuzz Failure Records
+  - Glossary Domain Documentation
+  - Heise Method
+  - Heise Solver Pruning
+  - Heise Solver Tests
+  - Heuristic Tables Documentation
+  - IDA Searcher Core
+  - Ignored Build Artifacts
+  - Integration Replay Tests
+  - Issue Tracker Documentation
+  - Layer Turn Animation
+  - Move Parsing Formatting
+  - Orbit Camera Picking
+  - Pattern Database Tables
+  - Phase Two Layouts
+  - Reference Simulator
+  - Renderer GL Drawing
+  - Renderer Interaction Tests
+  - Renderer Window Management
+  - Review Delivery Records
+  - Roux Method
+  - Roux Solver Pruning
+  - Roux Solver Tests
+  - Searcher Validation Tests
+  - Solution Stage Definitions
+  - Solve Options
+  - Solver Implementation File
+  - Solver Method Config
+  - Solver Theory Documentation
+  - Sticker Quad Struct
+  - Symmetry Table Layouts
+  - Table File Spec
+  - Tables Adapter Heuristics
+  - Tables Benchmark Documentation
+  - Tables Discovery Tests
+  - Tables Loading Discovery
+  - Tables Selftest Utility
+  - Validation Unit Tests
+  - ZZ Method
+  - ZZ Solver Pruning
+  - ZZ Solver Tests
+
+## COVERAGE
+In-scope files (task definition): 88 (68 tracked+untracked excluding graphify-out + 20 .archify/.scratch)
+.graphify_detect.json total files: 85 (distinct rel: 85)
+manifest.json entries: 85
+Distinct source_file in graph.json nodes: 87
+Distinct source_file in .graphify_extract.json nodes: 87
+Coverage graph_distinct/detect_total: 102.4%
+Coverage graph_distinct/in_scope(88): 98.9%
+Files in detect+manifest union with nodes: 84 / 85 (98.8%)
+Analysis node ids missing from graph.json: 0
+
+Files in detect+manifest WITHOUT any nodes (1):
+  - CMakeLists.txt
+
+GAP REASONS (see below):
+- graphify-out/* outputs excluded by design (not in-scope corpus).
+- Binary/unsupported extensions produce no AST nodes (partial coverage for tables binary blobs if any).
+- Empty-AST / doc-only files may yield concept nodes only in semantic chunks (docs1-3) or zero nodes if chunk deduplicated.
+- 85 detect vs 88 in-scope: delta of 3 expected from excluded graphify-out artefacts and gitignored build outputs.
+
+## CHECKS (10: 6 query + 2 path + 2 explain; task requires >=5/2/2 = 9 checks)
+  CHECK 1: PASS
+  CHECK 2: PASS
+  CHECK 3: PASS
+  CHECK 4: PASS
+  CHECK 5: PASS
+  CHECK 6: PASS
+  CHECK 7: PASS
+  CHECK 8: PASS
+  CHECK 9: PASS
+  CHECK 10: PASS
+Passed: 10/10
+Failures: none
+
+Detail in graphify_verifier_log.txt (command + result summary with source_location samples).
+
+God-node labels checked: CubeState degree=181, TEST() present=True
+Do NOT rebuild graph.

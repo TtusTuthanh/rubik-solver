@@ -57,6 +57,10 @@ bool is_second_block_solved(const CubeState& state);
 bool is_cmll_solved(const CubeState& state);
 bool is_lse_solved(const CubeState& state);
 
+// Combined stage heuristic value for a state (max of the stage's subproblem
+// PDBs). Exposed for admissibility testing: h(state) <= true stage distance.
+int heuristicForStage(const std::string& stage_name, const CubeState& state);
+
 // Roux solver. Returns a Solution with stages in stage_names() order whose
 // concatenated moves solve the cube. Respects SolveOptions:
 //   - timeout_ms > 0 bounds the whole solve; on expiry returns Timeout.

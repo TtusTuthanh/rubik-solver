@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "c956f153-51ca-4820-adf4-c7f3cc316a23",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "H:\\rubik-solver\\.archify\\architecture-rubik-solver-20261108-230835\\candidate.json",
+  "output": "H:\\rubik-solver\\.archify\\architecture-rubik-solver-20261108-230835\\rubik-solver-architecture.html",
+  "specification": {
+    "sha256": "2e27f0a757b32b31b474a4f693800a2614031cd66e1c3325ed2ea21a710664e6",
+    "bytes": 6240
+  },
+  "artifact": {
+    "sha256": "7b5bf52a68a7b09c8375b776643ea9662d5165f64e88d3a9a92def3b76206d92",
+    "bytes": 854746
+  }
+}

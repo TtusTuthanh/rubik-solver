@@ -1,0 +1,168 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Kiến trúc rubik-solver: CLI, solvers và core cubie",
+    "output": ".archify/architecture-rubik-solver-20261108-230835/rubik-solver-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/TtusTuthanh/rubik-solver.git",
+      "revision": "69a20161ec842d0d055e18a6041e1d2830564a25",
+      "provider": "github"
+    }
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "Người dùng",
+      "sublabel": "CLI + terminal",
+      "pos": [40, 180],
+      "size": [110, 56],
+      "sources": [{ "path": "src/main.cpp", "line": 28, "end_line": 34, "label": "Usage CLI" }]
+    },
+    {
+      "id": "cli",
+      "type": "frontend",
+      "label": "CLI rubik-solver",
+      "sublabel": "src/main.cpp",
+      "pos": [210, 80],
+      "size": [170, 64],
+      "sources": [
+        { "path": "src/main.cpp", "line": 60, "end_line": 81, "label": "Parse CLI" },
+        { "path": "src/main.cpp", "line": 94, "end_line": 107, "label": "Registry" }
+      ]
+    },
+    {
+      "id": "vis",
+      "type": "frontend",
+      "label": "Visualiser",
+      "sublabel": "ANSI cube net",
+      "pos": [210, 240],
+      "size": [170, 64],
+      "sources": [
+        { "path": "src/visualiser.cpp", "line": 132, "end_line": 149, "label": "Vis main" },
+        { "path": "src/visualiser.cpp", "line": 151, "end_line": 156, "label": "Vis registry" }
+      ]
+    },
+    {
+      "id": "human",
+      "type": "backend",
+      "label": "Solvers người",
+      "sublabel": "CFOP · Roux · ZZ · Heise",
+      "pos": [460, 80],
+      "size": [180, 64],
+      "sources": [
+        { "path": "src/main.cpp", "line": 94, "end_line": 102, "label": "5 methods" },
+        { "path": "src/core/interface.hpp", "line": 42, "end_line": 46, "label": "Solve contract" },
+        { "path": "src/solvers/cfop/solver.hpp", "line": 1, "end_line": 6, "label": "CFOP stages" }
+      ]
+    },
+    {
+      "id": "twophase",
+      "type": "backend",
+      "label": "Twophase",
+      "sublabel": "Kociemba G1",
+      "pos": [460, 200],
+      "size": [180, 64],
+      "sources": [
+        { "path": "src/solvers/twophase/solver.hpp", "line": 1, "end_line": 15, "label": "Two-phase" },
+        { "path": "src/solvers/twophase/solver.hpp", "line": 335, "end_line": 344, "label": "Solve" }
+      ]
+    },
+    {
+      "id": "searcher",
+      "type": "backend",
+      "label": "IdaSearcher",
+      "sublabel": "IDA* + PDB",
+      "pos": [730, 160],
+      "size": [170, 64],
+      "sources": [{ "path": "src/core/searcher.hpp", "line": 36, "end_line": 46, "label": "IDA* searcher" }]
+    },
+    {
+      "id": "core",
+      "type": "backend",
+      "label": "Core cubie",
+      "sublabel": "CubeState · moves",
+      "pos": [730, 280],
+      "size": [170, 64],
+      "sources": [
+        { "path": "src/core/cube.hpp", "line": 31, "end_line": 39, "label": "CubeState" },
+        { "path": "src/core/moves.hpp", "line": 20, "end_line": 28, "label": "Moves" },
+        { "path": "src/core/validation.hpp", "line": 37, "end_line": 39, "label": "Validate" }
+      ]
+    },
+    {
+      "id": "refsim",
+      "type": "backend",
+      "label": "Refsim",
+      "sublabel": "verify độc lập",
+      "pos": [460, 360],
+      "size": [180, 64],
+      "sources": [{ "path": "tests/core/reference_sim.hpp", "line": 1, "end_line": 7, "label": "Refsim" }]
+    },
+    {
+      "id": "tables",
+      "type": "database",
+      "label": "Tables HTM",
+      "sublabel": "mmap read-only",
+      "pos": [730, 400],
+      "size": [170, 64],
+      "sources": [
+        { "path": "src/tables/tables_loader.hpp", "line": 262, "end_line": 265, "label": "TableLoader" },
+        { "path": "src/tables/adapter.hpp", "line": 32, "end_line": 40, "label": "TablesAdapter" }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "rubik-solver C++23",
+      "wraps": ["cli", "vis", "human", "twophase", "searcher", "core", "refsim", "tables"]
+    }
+  ],
+  "connections": [
+    { "id": "c_user_cli", "from": "user", "to": "cli", "label": "lệnh CLI" },
+    { "id": "c_user_vis", "from": "user", "to": "vis", "label": "n / p / q" },
+    { "id": "c_cli_human", "from": "cli", "to": "human", "label": "solve", "variant": "emphasis" },
+    { "id": "c_cli_two", "from": "cli", "to": "twophase", "label": "solve", "variant": "emphasis" },
+    { "id": "c_vis_human", "from": "vis", "to": "human", "label": "solve" },
+    { "id": "c_vis_two", "from": "vis", "to": "twophase", "label": "solve" },
+    { "id": "c_human_searcher", "from": "human", "to": "searcher", "label": "IDA* từng stage" },
+    { "id": "c_human_core", "from": "human", "to": "core", "label": "CubeState + moves" },
+    { "id": "c_two_searcher", "from": "twophase", "to": "searcher", "label": "IDA* 2-phase" },
+    { "id": "c_two_core", "from": "twophase", "to": "core", "label": "CubeState" },
+    { "id": "c_two_tables", "from": "twophase", "to": "tables", "label": "heuristic HTM", "variant": "dashed" },
+    { "id": "c_cli_refsim", "from": "cli", "to": "refsim", "label": "verified" },
+    { "id": "c_vis_refsim", "from": "vis", "to": "refsim", "label": "refsim matches" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Kết luận",
+      "items": [
+        "C++23 CLI giải 3x3 theo 5 method qua hợp đồng solve chung.",
+        "Core cubie CP/CO/EP/EO là cầu nối giữa CLI, solvers và searcher.",
+        "God nodes từ graphify: CubeState, IdaSearcher, TableLoader."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Phương giải",
+      "items": [
+        "CFOP: cross -> F2L -> OLL -> PLL; Roux: block -> CMLL -> LSE (M, U).",
+        "ZZ: EOLine -> ZZF2L -> COLL -> EPLL; Heise: squares -> pairs -> final.",
+        "Twophase: phase1 (18 moves) -> G1 -> phase2 (10 moves)."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Kiểm chứng",
+      "items": [
+        "Validate facelets trước giải; refsim độc lập cross-check sau giải.",
+        "Thiếu tables thì twophase fallback h=0 và Timeout.",
+        "Visualiser là binary thứ hai, xem cube net theo stage."
+      ]
+    }
+  ]
+}

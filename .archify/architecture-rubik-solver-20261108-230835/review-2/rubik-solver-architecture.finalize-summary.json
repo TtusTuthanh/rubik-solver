@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "command": "finalize",
+  "status": "fail",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "H:\\rubik-solver\\.archify\\architecture-rubik-solver-20261108-230835\\candidate.json",
+    "sha256": "00e069f1505cc4073cfe129eff204d41fd63347a69e9cf5c83b48f35ba384727",
+    "bytes": 6240
+  },
+  "artifact": {
+    "path": "H:\\rubik-solver\\.archify\\architecture-rubik-solver-20261108-230835\\rubik-solver-architecture.html",
+    "sha256": "7b5bf52a68a7b09c8375b776643ea9662d5165f64e88d3a9a92def3b76206d92",
+    "bytes": 854746
+  },
+  "gates": {
+    "validate": "fail",
+    "deliver": "not-run",
+    "check": "not-run",
+    "browser-check": "not-run"
+  },
+  "failedStage": "validate",
+  "diagnostics": [
+    {
+      "code": "layout/constraint",
+      "severity": "error",
+      "message": "Connection \"verified\" is too short (16px; minimum 24px) — place its components farther apart.",
+      "subject": {
+        "diagramType": "architecture"
+      }
+    },
+    {
+      "code": "layout/constraint",
+      "severity": "error",
+      "message": "Connection \"refsim matches\" is too short (16px; minimum 24px) — place its components farther apart.",
+      "subject": {
+        "diagramType": "architecture"
+      }
+    },
+    {
+      "code": "layout/constraint",
+      "severity": "error",
+      "message": "Label \"verified\" overlaps component \"cli\" — adjust labelDx/labelDy/labelSegment or set labelAt.\n  label rect: [271, 124, 48, 14]\n  component \"cli\" rect: [210, 80, 170, 64]\n  Suggested fix: set labelAt [295, 158] or set labelDy 24 (below); or set labelAt [295, 72] or set labelDy -62 (above)",
+      "subject": {
+        "diagramType": "architecture"
+      }
+    },
+    {
+      "code": "layout/constraint",
+      "severity": "error",
+      "message": "Label \"refsim matches\" overlaps component \"refsim\" — adjust labelDx/labelDy/labelSegment or set labelAt.\n  label rect: [256, 220, 77, 14]\n  component \"refsim\" rect: [210, 160, 180, 64]\n  Suggested fix: set labelAt [295, 238] or set labelDy 8 (below); or set labelAt [295, 152] or set labelDy -78 (above)",
+      "subject": {
+        "diagramType": "architecture"
+      }
+    }
+  ],
+  "diagnosticSummary": {
+    "total": 4,
+    "shown": 4,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "H:\\rubik-solver\\.archify\\architecture-rubik-solver-20261108-230835\\review-2\\rubik-solver-architecture.finalize.json",
+    "summaryReceipt": "H:\\rubik-solver\\.archify\\architecture-rubik-solver-20261108-230835\\review-2\\rubik-solver-architecture.finalize-summary.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-08T15:55:55.969Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 626,
+  "browserCheck": {
+    "requested": true,
+    "ran": false
+  },
+  "nextAction": {
+    "action": "edit-in-place",
+    "candidate": "H:\\rubik-solver\\.archify\\architecture-rubik-solver-20261108-230835\\candidate.json",
+    "constraint": "Preserve unaffected semantics and geometry; apply each diagnostic's supportedFixes, or the fix its message names, and do not replace the whole candidate.",
+    "then": "finalize-once"
+  }
+}

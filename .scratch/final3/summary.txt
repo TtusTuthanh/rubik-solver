@@ -1,0 +1,89 @@
+FINAL INTEGRATION CHECK — refactor/remove-optimal-perf
+Branch: refactor/remove-optimal-perf | Baseline: 9b6e14c | HEAD: 3d3b79b
+State: cfop migrated+faster; roux/zz/heise byte-identical to baseline (reverted); twophase optimized; optimal removed.
+No full re-bench performed (numbers from .scratch/final2/results.json, full-50, post-final).
+
+=== 1. Build ===
+cmd: cmake --build build-final2 --config Release
+output:
+ninja: no work to do.
+EXIT=0
+warnings: 0 (incremental no-op into existing build-final2 as required; no new deps/flags).
+
+=== 2. Tests ===
+cmd: ctest --test-dir build-final2
+output:
+Test project H:/rubik-solver/build-final2
+    Start 1: rubik_core_tests
+1/5 Test #1: rubik_core_tests .................   Passed    0.02 sec
+    Start 2: rubik_cfop_tests
+2/5 Test #2: rubik_cfop_tests .................   Passed   12.60 sec
+    Start 3: rubik_roux_tests
+3/5 Test #3: rubik_roux_tests .................   Passed    1.99 sec
+    Start 4: rubik_zz_tests
+4/5 Test #4: rubik_zz_tests ...................   Passed    1.02 sec
+    Start 5: rubik_heise_tests
+5/5 Test #5: rubik_heise_tests ................   Passed   19.12 sec
+100% tests passed out of 5
+Total Test time (real) =  34.80 sec
+EXIT=0
+pass count: 5/5.
+
+=== 3. "optimal" grep ===
+cmd: grep -ri optimal src CMakeLists.txt tests docs README.md benchmarks AGENTS.md
+total hits: 35 (src=13, tests=19, docs=3, other=0)
+- Dead code (1): src/core/interface.hpp:40 enum class Method { Cfop, Roux, Zz, Heise, Optimal };
+- Generic move-optimal comments (12): src/solvers/cfop/solver.cpp:811,971,972,1021 (4); src/solvers/cfop/solver.hpp:5-6 (2); src/solvers/heise/solver.hpp:5-6 (2); src/solvers/roux/solver.hpp:5-6 (2); src/solvers/zz/solver.hpp:5-6 (2) — all "move-optimal per stage / fingertrick-optimal" phrasing, no optimal-solver references.
+- Proper names (3): docs/SPEC.md Korf 1997 PDB/IDA* citation (notes removed solver not in tree); docs/tables.md James Cameron "Optimal Rubik's Cube Solver" x2.
+- Historical logs only (19+1): tests/tables/* (bench.txt, build.log, ctest.log, fuzz_results.txt, fuzz_stderr.txt, fuzz_stdout.txt, parity.txt) referencing removed rubik_optimal binary/results — not active source, not built.
+Conclusion: no src/tests active code depends on optimal solver; only interface.hpp:40 dead enum remains.
+
+=== 4. CLI ===
+cmd: build-final2/rubik-solver.exe --help
+output:
+Usage: rubik-solver --method <cfop|roux|zz|heise|twophase> [--scramble "R U R' ..."] [--facelets <54>] [--random-depth N] [--seed N] [--data-dir DIR] [--tables-dir DIR] [--timeout-ms N]
+EXIT=0  (5 methods listed: cfop, roux, zz, heise, twophase)
+cmd: build-final2/rubik-solver.exe --method optimal --scramble "R U"
+output:
+Error: unknown method 'optimal' (choose cfop|roux|zz|heise|twophase)
+EXIT=2
+
+=== 5. Git ===
+cmd: git log --oneline 9b6e14c..HEAD
+c5262dc feat: shared IdaSearcher
+3070060 refactor: migrate roux to shared IdaSearcher
+9fe2caf refactor: migrate cfop to shared IdaSearcher
+88a99bf refactor: migrate heise to shared IdaSearcher
+db9644a refactor: migrate zz to shared IdaSearcher
+8ff8c04 refactor: remove optimal solver
+4a8085c perf: optimize twophase/TableLoader
+60a9551 fix: restore cfop move pruning
+7e3d991 fix: restore roux move pruning
+0d17fcf fix: stable candidate ordering for deterministic search
+34dbe62 revert: roux to baseline solver (shared-searcher regression)
+72f0362 revert: heise to baseline solver (timeout regression)
+3d3b79b revert: zz to baseline solver (marginal #27 timeout)
+cmd: git status --short
+?? .scratch/
+?? benchmarks/baseline/
+?? build-clean/
+?? build-final/
+?? build-final2/
+?? build-stab/
+?? graphify-out/
+cmd: git diff 9b6e14c HEAD --stat (25 files changed, 1009 insertions, 2386 deletions)
+AGENTS.md 2+-; CMakeLists.txt 25+-; README.md 25+-; benchmarks/fuzz.cpp 87+--; benchmarks/results.txt 11+-; benchmarks/results_full.txt 11+-; benchmarks/tables_bench.txt 2+-; docs/SPEC.md 23+-; docs/tables.md 85+--; src/build_pattern_db.cpp 103---; src/core/pdb.hpp 49++; src/core/searcher.hpp 194++++; src/main.cpp 15+-; src/solvers/cfop/solver.cpp 447+------; src/solvers/optimal/solver.cpp 962---; src/solvers/optimal/solver.hpp 134---; src/solvers/twophase/solver.hpp 59++; src/tables/adapter.cpp 97++; src/tables/adapter.hpp 8+-; src/tables/tables_loader.cpp 125++-; src/tables/tables_loader.hpp 50+-; src/visualiser.cpp 12+-; tests/core/test_searcher.cpp 201++++; tests/optimal/test_optimal.cpp 481---; tests/tables/tables_verifier.cpp 187+------
+
+=== 6. Full-50 (.scratch/final2/results.json, post-final, no re-bench) ===
+cfop: 50 runs, 0 fails, median 3146.5ms (0 fails/3147ms) — migrated+faster.
+roux: 49/50 (baseline-identical; 1 Timeout) median 703ms.
+zz: 49/50 median 743ms; heise: 44/50 median 2127ms (both baseline-identical reverts).
+twophase: 50 runs, 0 fails, median 426ms with tables (optimized).
+
+=== UNRESOLVED (human decision / notes) ===
+(a) src/core/interface.hpp:40 Method::Optimal dead enum — needs human approval to remove (edit forbidden to this subagent).
+(b) twophase without tables still Timeout at h=0 (tables at build/tables/, 11.8GB, not shipped) — expected limitation; 426ms figure uses tables.
+(c) thread_count unused — no multi-threading; single-threaded as baseline.
+(d) roux/zz/heise remain duplicated (each retains own searcher) — justified exceptions after measured regressions of shared IdaSearcher; reverts are byte-identical to 9b6e14c.
+(e) cfop heuristic cache cPos/ePos unchanged — matches heise evidence; cfop migrated path retains same heuristic cache (note only, not re-verified with diff here).
+READ-ONLY: no edits to src/tests/CMakeLists/docs/README/benchmarks/data/tables/graphify/.env/lockfiles/CI/interface.hpp/main.cpp; no new deps/flags; never pushed. Only file created: .scratch/final3/summary.txt.

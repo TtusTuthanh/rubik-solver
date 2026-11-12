@@ -15,6 +15,7 @@
 #include "core/moves.hpp"
 #include "core/pdb.hpp"
 #include "core/searcher.hpp"
+#include "tables/move_pruning.hpp"
 
 namespace rubik::roux {
 
@@ -785,19 +786,15 @@ bool stageGoal(StageKind kind, const CubeState& s) {
   return is_lse_solved(s);
 }
 
-// Search state wraps the cube with the previously used face so the shared
-// searcher keeps the original same-face pruning (core::IdaSearcher has no
-// pruning hook). A same-face continuation is marked dead and given a huge
-// heuristic, so its f always exceeds the bound and the branch is pruned.
-// This is optimality-neutral: any path with two consecutive same-face moves
-// merges into a single move, so an optimal path never needs them.
+// Search state wraps the cube. The shared searcher tracks the previous move
+// via `path_.back()` and the move-pruning table (set via
+// `IdaSearcher::setMovePruning`) eliminates redundant same-face and
+// opposite-face continuations. Both rules are optimality-neutral: any path
+// with two consecutive same-face moves merges into one, and opposite faces
+// commute so only one consecutive order is needed.
 struct SearchState {
   CubeState cube;
-  int prevFace = -1;
-  bool dead = false;
 };
-
-inline constexpr int kPruneHeuristic = 1 << 25;
 
 std::expected<std::vector<int>, SolveError> runStage(
     const CubeState& start, StageKind kind, const std::vector<int>& allowed,
@@ -814,16 +811,20 @@ std::expected<std::vector<int>, SolveError> runStage(
   if (heuristicFor(kind, pdbs, start) > stageLimit) {
     return std::unexpected(SolveError::Timeout);
   }
+
+  // Move-pruning table for this stage's move set: same-face continuations and
+  // non-canonical opposite-face orders are pruned (Korf 1997, lossless).
+  // The table outlives the searcher's run() call below, so the policy's
+  // shared buffer stays valid for the entire search.
+  tables::MovePruningTable pruning_table(allowed);
+
   auto apply = [&md](const SearchState& s, int move) {
-    const int face = md.faceGroup[static_cast<std::size_t>(move)];
-    if (face == s.prevFace) return SearchState{s.cube, s.prevFace, true};
-    return SearchState{fastApply(s.cube, move, md), face, false};
+    return SearchState{fastApply(s.cube, move, md)};
   };
   auto goal = [kind](const SearchState& s) {
-    return !s.dead && stageGoal(kind, s.cube);
+    return stageGoal(kind, s.cube);
   };
   auto heur = [&pdbs, kind](const SearchState& s) {
-    if (s.dead) return kPruneHeuristic;
     return heuristicFor(kind, pdbs, s.cube);
   };
   using SearcherT = core::IdaSearcher<SearchState, decltype(apply),
@@ -832,7 +833,8 @@ std::expected<std::vector<int>, SolveError> runStage(
   searcher.setThreadCount(threadCount);
   if (hasDeadline) searcher.setDeadline(deadline);
   searcher.setStopToken(externalToken);
-  const SearchState root{start, -1, false};
+  searcher.setMovePruning(pruning_table.policy());
+  const SearchState root{start};
   auto result = searcher.run(root, stageLimit);
   if (result) return result;
   if (result.error() == SolveError::Timeout ||
@@ -982,6 +984,23 @@ std::expected<Solution, SolveError> solve(const CubeState& state,
   }
   if (!is_solved(cur)) return std::unexpected(SolveError::Unsolvable);
   return sol;
+}
+
+int heuristicForStage(const std::string& stage_name, const CubeState& state) {
+  const Pdbs& pdbs = getPdbs();
+  if (stage_name == "first_block") {
+    return heuristicFor(StageKind::FirstBlock, pdbs, state);
+  }
+  if (stage_name == "second_block") {
+    return heuristicFor(StageKind::SecondBlock, pdbs, state);
+  }
+  if (stage_name == "cmll") {
+    return heuristicFor(StageKind::Cmll, pdbs, state);
+  }
+  if (stage_name == "lse") {
+    return heuristicFor(StageKind::Lse, pdbs, state);
+  }
+  return 0;
 }
 
 }  // namespace rubik::roux

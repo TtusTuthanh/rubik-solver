@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "H:\\rubik-solver\\.archify\\architecture-rubik-solver-20261108-230835\\candidate.json",
+    "sha256": "2e27f0a757b32b31b474a4f693800a2614031cd66e1c3325ed2ea21a710664e6",
+    "bytes": 6240
+  },
+  "artifact": {
+    "path": "H:\\rubik-solver\\.archify\\architecture-rubik-solver-20261108-230835\\rubik-solver-architecture.html",
+    "sha256": "7b5bf52a68a7b09c8375b776643ea9662d5165f64e88d3a9a92def3b76206d92",
+    "bytes": 854746
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "H:\\rubik-solver\\.archify\\architecture-rubik-solver-20261108-230835\\review-3\\rubik-solver-architecture.finalize.json",
+    "summaryReceipt": "H:\\rubik-solver\\.archify\\architecture-rubik-solver-20261108-230835\\review-3\\rubik-solver-architecture.finalize-summary.json",
+    "browserCheckReceipt": "H:\\rubik-solver\\.archify\\architecture-rubik-solver-20261108-230835\\review-3\\rubik-solver-architecture.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-08T15:55:55.969Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 3199,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  },
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "resolvedCrossovers": 3,
+      "routesOverSuggestedBends": 2,
+      "routesOverSuggestedStretch": 1
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [
+        {
+          "left": {
+            "id": "c_user_vis",
+            "from": "user",
+            "to": "vis",
+            "label": "n / p / q",
+            "collectionIndex": 1,
+            "artifactIndex": 2
+          },
+          "right": {
+            "id": "c_cli_refsim",
+            "from": "cli",
+            "to": "refsim",
+            "label": "verified",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "point": [
+            172,
+            220
+          ]
+        },
+        {
+          "left": {
+            "id": "c_cli_two",
+            "from": "cli",
+            "to": "twophase",
+            "label": "solve",
+            "collectionIndex": 3,
+            "artifactIndex": 4
+          },
+          "right": {
+            "id": "c_vis_human",
+            "from": "vis",
+            "to": "human",
+            "label": "solve",
+            "collectionIndex": 4,
+            "artifactIndex": 5
+          },
+          "point": [
+            436,
+            225.00000000000003
+          ]
+        },
+        {
+          "left": {
+            "id": "c_cli_refsim",
+            "from": "cli",
+            "to": "refsim",
+            "label": "verified",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "right": {
+            "id": "c_vis_refsim",
+            "from": "vis",
+            "to": "refsim",
+            "label": "refsim matches",
+            "collectionIndex": 12,
+            "artifactIndex": 13
+          },
+          "point": [
+            295,
+            346
+          ],
+          "sharedNode": "refsim"
+        }
+      ],
+      "detours": [
+        {
+          "relationship": {
+            "id": "c_two_tables",
+            "from": "twophase",
+            "to": "tables",
+            "label": "heuristic HTM",
+            "collectionIndex": 10,
+            "artifactIndex": 11
+          },
+          "bends": 3,
+          "stretch": 1
+        },
+        {
+          "relationship": {
+            "id": "c_cli_refsim",
+            "from": "cli",
+            "to": "refsim",
+            "label": "verified",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "bends": 5,
+          "stretch": 1.617
+        }
+      ],
+      "truncated": false
+    },
+    "hints": [
+      "user → vis crosses cli → refsim: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "cli → twophase crosses vis → human: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "cli → refsim and vis → refsim cross next to refsim: move node cli or vis so the two reach refsim from different sides (for example one level with it, one directly above or below it).",
+      "twophase → tables needs 3 bends: move node twophase or tables so they share a row or column with matching centers, or sit diagonally with a clear corner.",
+      "cli → refsim needs 5 bends: move node cli or refsim so they share a row or column with matching centers, or sit diagonally with a clear corner."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

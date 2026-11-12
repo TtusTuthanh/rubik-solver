@@ -20,22 +20,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(googletest)
 
-# --- Visualiser renderer: GLFW + OpenGL 3.3 core (FetchContent, no vcpkg) ---
-FetchContent_Declare(
-  glfw
-  GIT_REPOSITORY https://github.com/glfw/glfw.git
-  GIT_TAG 3.4
-)
-set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
-set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(glfw)
-find_package(OpenGL REQUIRED)
-add_library(rubik_visualiser_renderer src/visualiser/renderer.cpp)
-target_include_directories(rubik_visualiser_renderer PUBLIC src)
-target_compile_features(rubik_visualiser_renderer PUBLIC cxx_std_23)
-target_link_libraries(rubik_visualiser_renderer PUBLIC rubik_core glfw OpenGL::GL)
-
 if(BUILD_TESTING)
   enable_testing()
 endif()
@@ -48,15 +32,15 @@ add_library(rubik_core
 target_include_directories(rubik_core PUBLIC src)
 target_compile_features(rubik_core PUBLIC cxx_std_23)
 
-add_library(rubik_tables src/tables/tables_loader.cpp src/tables/adapter.cpp)
+add_library(rubik_tables
+  src/tables/tables_loader.cpp
+  src/tables/adapter.cpp
+  src/tables/stage_pdb.cpp
+  src/tables/move_pruning.cpp
+)
 target_include_directories(rubik_tables PUBLIC src)
 target_compile_features(rubik_tables PUBLIC cxx_std_23)
 target_link_libraries(rubik_tables PUBLIC rubik_core)
-
-add_library(rubik_facelet src/visualiser/facelet.cpp)
-target_include_directories(rubik_facelet PUBLIC src)
-target_compile_features(rubik_facelet PUBLIC cxx_std_23)
-target_link_libraries(rubik_facelet PUBLIC rubik_core)
 
 # Solver backends are added in P2/P3 (dirs may not exist yet).
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/solvers/twophase/solver.cpp)
@@ -82,69 +66,56 @@ foreach(_t rubik_cfop rubik_roux rubik_zz rubik_heise rubik_twophase)
   endif()
 endforeach()
 
-add_executable(rubik-visualiser src/visualiser.cpp)
-target_include_directories(rubik-visualiser PUBLIC src tests)
-target_link_libraries(rubik-visualiser PRIVATE rubik_core)
-foreach(_t rubik_cfop rubik_roux rubik_zz rubik_heise rubik_twophase)
-  if(TARGET ${_t})
-    target_link_libraries(rubik-visualiser PRIVATE ${_t})
-  endif()
-endforeach()
-
-# --- Interactive 3D GUI: ImGui (FetchContent) + renderer + 5 solvers ---
-FetchContent_Declare(
-  imgui
-  GIT_REPOSITORY https://github.com/ocornut/imgui.git
-  GIT_TAG v1.91.6
-)
-FetchContent_MakeAvailable(imgui)
-add_library(imgui STATIC
-  ${imgui_SOURCE_DIR}/imgui.cpp
-  ${imgui_SOURCE_DIR}/imgui_draw.cpp
-  ${imgui_SOURCE_DIR}/imgui_tables.cpp
-  ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-  ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
-  ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
-)
-target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
-target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
-add_executable(rubik-visualiser3d src/visualiser/main_3d.cpp)
-target_include_directories(rubik-visualiser3d PUBLIC src)
-target_link_libraries(rubik-visualiser3d PRIVATE
-  rubik_core rubik_facelet rubik_visualiser_renderer rubik_tables imgui)
-foreach(_t rubik_cfop rubik_roux rubik_zz rubik_heise rubik_twophase)
-  if(TARGET ${_t})
-    target_link_libraries(rubik-visualiser3d PRIVATE ${_t})
-  endif()
-endforeach()
-
 if(BUILD_TESTING)
-  add_executable(rubik_core_tests tests/core/test_cube.cpp tests/core/test_validation.cpp)
-  target_include_directories(rubik_core_tests PUBLIC src)
-  target_link_libraries(rubik_core_tests PRIVATE rubik_core gtest_main)
-  add_test(NAME rubik_core_tests COMMAND rubik_core_tests)
-  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/visualiser/test_renderer.cpp)
-    add_executable(rubik_visualiser_tests tests/visualiser/test_renderer.cpp)
-    target_include_directories(rubik_visualiser_tests PUBLIC src)
-    target_link_libraries(rubik_visualiser_tests PRIVATE rubik_visualiser_renderer rubik_core gtest_main)
-    add_test(NAME rubik_visualiser_tests COMMAND rubik_visualiser_tests)
-  endif()
-  add_executable(test_facelet tests/visualiser/test_facelet.cpp)
-  target_include_directories(test_facelet PUBLIC src)
-  target_link_libraries(test_facelet PRIVATE rubik_facelet rubik_core gtest_main)
-  add_test(NAME test_facelet COMMAND test_facelet)
-  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/visualiser/test_integration.cpp)
-    add_executable(rubik_visualiser_integration_tests tests/visualiser/test_integration.cpp)
-    target_include_directories(rubik_visualiser_integration_tests PUBLIC src)
-    target_link_libraries(rubik_visualiser_integration_tests PRIVATE
-      rubik_core rubik_facelet rubik_visualiser_renderer rubik_tables gtest_main)
-    foreach(_t rubik_cfop rubik_roux rubik_zz rubik_heise rubik_twophase)
-      if(TARGET ${_t})
-        target_link_libraries(rubik_visualiser_integration_tests PRIVATE ${_t})
-      endif()
-    endforeach()
-    add_test(NAME rubik_visualiser_integration_tests COMMAND rubik_visualiser_integration_tests)
-  endif()
+  add_executable(rubik_core_tests_cube tests/core/test_cube.cpp)
+  target_include_directories(rubik_core_tests_cube PUBLIC src)
+  target_link_libraries(rubik_core_tests_cube PRIVATE rubik_core gtest_main)
+  add_test(NAME rubik_core_tests_cube COMMAND rubik_core_tests_cube)
+
+  add_executable(rubik_core_tests_validation tests/core/test_validation.cpp)
+  target_include_directories(rubik_core_tests_validation PUBLIC src)
+  target_link_libraries(rubik_core_tests_validation PRIVATE rubik_core gtest_main)
+  add_test(NAME rubik_core_tests_validation COMMAND rubik_core_tests_validation)
+
+  add_executable(rubik_core_tests_searcher tests/core/test_searcher.cpp)
+  target_include_directories(rubik_core_tests_searcher PUBLIC src)
+  target_link_libraries(rubik_core_tests_searcher PRIVATE rubik_core gtest_main)
+  add_test(NAME rubik_core_tests_searcher COMMAND rubik_core_tests_searcher)
+
+  add_executable(rubik_core_tests_heuristic tests/core/test_heuristic.cpp)
+  target_include_directories(rubik_core_tests_heuristic PUBLIC src)
+  target_link_libraries(rubik_core_tests_heuristic PRIVATE rubik_core rubik_tables gtest_main)
+  add_test(NAME rubik_core_tests_heuristic COMMAND rubik_core_tests_heuristic)
+
+  add_executable(rubik_solver_replay_tests tests/integration/test_solver_replay.cpp)
+  target_include_directories(rubik_solver_replay_tests PUBLIC src)
+  target_link_libraries(rubik_solver_replay_tests PRIVATE
+    rubik_core rubik_tables rubik_cfop rubik_roux rubik_zz rubik_heise rubik_twophase gtest_main)
+  add_test(NAME rubik_solver_replay_tests COMMAND rubik_solver_replay_tests)
+
+  add_executable(rubik_tables_tests_move_pruning tests/tables/test_move_pruning.cpp)
+  target_include_directories(rubik_tables_tests_move_pruning PUBLIC src)
+  target_link_libraries(rubik_tables_tests_move_pruning PRIVATE rubik_tables rubik_core gtest_main)
+  add_test(NAME rubik_tables_tests_move_pruning COMMAND rubik_tables_tests_move_pruning)
+
+  add_executable(rubik_tables_tests_stage_pdb tests/tables/test_stage_pdb.cpp)
+  target_include_directories(rubik_tables_tests_stage_pdb PUBLIC src)
+  target_link_libraries(rubik_tables_tests_stage_pdb PRIVATE rubik_tables rubik_core gtest_main)
+  add_test(NAME rubik_tables_tests_stage_pdb COMMAND rubik_tables_tests_stage_pdb)
+
+  # Nibble-pack / stage-PDB format tests (BUG-01: nibble-pack overflow).
+  add_executable(rubik_tables_tests_stage_pdb_packing tests/tables/test_stage_pdb_packing.cpp)
+  target_include_directories(rubik_tables_tests_stage_pdb_packing PUBLIC src)
+  target_link_libraries(rubik_tables_tests_stage_pdb_packing PRIVATE rubik_tables rubik_core gtest_main)
+  add_test(NAME rubik_tables_tests_stage_pdb_packing COMMAND rubik_tables_tests_stage_pdb_packing)
+
+  # Structural admissibility gate of the shared heuristic combinator
+  # (BUG-02: SUM without an operator-support check).
+  add_executable(rubik_core_tests_heuristic_guard tests/core/test_heuristic_admissibility_guard.cpp)
+  target_include_directories(rubik_core_tests_heuristic_guard PUBLIC src)
+  target_link_libraries(rubik_core_tests_heuristic_guard PRIVATE rubik_core rubik_tables gtest_main)
+  add_test(NAME rubik_core_tests_heuristic_guard COMMAND rubik_core_tests_heuristic_guard)
+
   foreach(_m cfop roux zz heise)
     if(TARGET rubik_${_m})
       add_executable(rubik_${_m}_tests tests/${_m}/test_${_m}.cpp)
@@ -153,4 +124,34 @@ if(BUILD_TESTING)
       add_test(NAME rubik_${_m}_tests COMMAND rubik_${_m}_tests)
     endif()
   endforeach()
+
+  # CFOP heuristic admissibility spot-checks (goal + k random moves, k=0..6).
+  add_executable(rubik_cfop_admissibility_tests tests/cfop/test_admissibility.cpp)
+  target_include_directories(rubik_cfop_admissibility_tests PUBLIC src)
+  target_link_libraries(rubik_cfop_admissibility_tests PRIVATE
+    rubik_cfop rubik_core gtest_main)
+  add_test(NAME rubik_cfop_admissibility_tests COMMAND rubik_cfop_admissibility_tests)
+
+  # CFOP differential test vs. baseline (F-06): optimized solver always
+  # solves and uses no more moves than the baseline per scramble.
+  add_executable(rubik_cfop_differential_tests tests/cfop/test_differential.cpp)
+  target_include_directories(rubik_cfop_differential_tests PUBLIC src)
+  target_link_libraries(rubik_cfop_differential_tests PRIVATE
+    rubik_cfop rubik_core gtest_main)
+  add_test(NAME rubik_cfop_differential_tests COMMAND rubik_cfop_differential_tests)
+
+  # Roux admissibility test: Korf-style PDB heuristic h(state) <= true stage
+  # distance for states k moves (k=0..6) from each stage goal state.
+  add_executable(rubik_roux_tests_admissibility tests/roux/test_admissibility.cpp)
+  target_include_directories(rubik_roux_tests_admissibility PUBLIC src)
+  target_link_libraries(rubik_roux_tests_admissibility PRIVATE rubik_roux rubik_core gtest_main)
+  add_test(NAME rubik_roux_tests_admissibility COMMAND rubik_roux_tests_admissibility)
+
+  # Fuzz/benchmark harness (NOT a ctest test; driven manually, see docs/SPEC.md
+  # sections 10 + 8). Registered so that the baseline and the post-upgrade
+  # measurement are produced by an identical build configuration.
+  add_executable(rubik_fuzz benchmarks/fuzz.cpp)
+  target_include_directories(rubik_fuzz PUBLIC src tests)
+  target_link_libraries(rubik_fuzz PRIVATE
+    rubik_core rubik_cfop rubik_roux rubik_zz rubik_heise)
 endif()

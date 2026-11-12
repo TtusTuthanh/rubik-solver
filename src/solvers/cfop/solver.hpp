@@ -57,4 +57,12 @@ bool is_pll_solved(const CubeState& state);
 std::expected<Solution, SolveError> solve(const CubeState& state,
                                           const SolveOptions& options);
 
+// ---- Test accessors (admissibility testing). ----
+// Not part of the frozen solve() interface; used only by tests/cfop to
+// verify that the per-stage heuristic never overestimates the true stage
+// distance (admissibility). Mirrors the StageKind used internally by runIda().
+enum class TestStageKind { Cross, F2L_1, Oll, Pll };
+int testStageHeuristic(TestStageKind kind, int pairIndex,
+                       const CubeState& state);
+
 }  // namespace rubik::cfop

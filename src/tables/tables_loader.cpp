@@ -1163,7 +1163,7 @@ std::filesystem::path executable_dir() {
 
 std::filesystem::path default_tables_dir() {
   // Discovery-aware default: prefer an actually-present tables dir so
-  // callers that pin `default_tables_dir()` (e.g. the visualiser) still
+  // callers that pin `default_tables_dir()` still
   // find build/tables without a flag; otherwise the legacy fallback.
   std::error_code ec;
   std::filesystem::path cwd = std::filesystem::current_path(ec);

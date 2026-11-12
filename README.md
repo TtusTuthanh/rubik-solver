@@ -62,16 +62,7 @@ Verify failures = 0 for every method (every returned solution re-checked with th
 
 ## Tests
 
-`ctest` — 5 suites, 62 tests (core 19, cfop 11, roux 10, zz 11, heise 11). Tables admissibility ≤ depth 6 (pattern space) / ≤5 (full cube, ~700k states) is exercised via `tests/tables/tables_verifier` (standalone, not part of ctest). Invalid facelets (twist/flip/parity) rejected with specific errors. `git ls-files` shows no `*.db`.
-
-## Visualiser (P5 Option 1 — terminal ANSI)
-
-```
-.\build\rubik-visualiser.exe --method cfop --scramble "R U"          # press n/p to step stages, q to quit
-.\build\rubik-visualiser.exe --method roux --random-depth 10 --seed 42 --auto  # print all stages (scripts)
-```
-
-Step-through cube net (`U` on top, `L F R B` middle, `D` bottom, URFDLB order) with ANSI colours, reusing `to_facelets()` + the independent refsim. Shows each stage's cube state, its moves, `predicate [stage]: yes/no` (solver goal predicate), `refsim matches state: yes/no`, and final `solved: yes/no`. `--auto` prints every stage without waiting for keys (verified 2026-11-08: all 5 methods × scramble + random-depth 10 → predicate/refsim/solved all `yes`). Interactive mode reads single keys via `_getch()` on Windows (no new dependencies). GLFW + OpenGL 3D is deferred until stage logic is validated further.
+`ctest` — 6 suites (core, cfop, roux, zz, heise, solver_replay). Tables admissibility ≤ depth 6 (pattern space) / ≤5 (full cube, ~700k states) is exercised via `tests/tables/tables_verifier` (standalone, not part of ctest). Invalid facelets (twist/flip/parity) rejected with specific errors. `git ls-files` shows no `*.db`.
 
 ## External tables (`tables\`, gitignored)
 
