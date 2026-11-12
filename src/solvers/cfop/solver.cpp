@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <cstdint>
 #include <format>
 #include <iostream>
@@ -15,6 +16,7 @@
 #include "core/moves.hpp"
 #include "core/pdb.hpp"
 #include "core/searcher.hpp"
+#include "tables/move_pruning.hpp"
 
 namespace rubik::cfop {
 namespace {
@@ -700,7 +702,7 @@ Pdbs buildPdbs(const MoveData& md) {
   report(p.oriE, "oriE");
   p.oriBoth = buildOriBothDb(a15, md);
   report(p.oriBoth, "oriBoth");
-  p.pllPerm = buildPllPermDb(a15, md);
+  p.pllPerm = buildPllPermDb(a18, md);
   report(p.pllPerm, "pllPerm");
   return p;
 }
@@ -913,13 +915,11 @@ int stageHeuristic(StageKind kind, int pairIdx, const Pdbs& pdbs,
     }
     h = (std::max)(h, pdbLookup(pdbs.ollC, cornerPatternIdx(s, kUIds)));
   } else if (kind == StageKind::Oll) {
-    h = (std::max)(h, pdbLookup(pdbs.cross15, edgePatternIdx(s, kCrossIds)));
-    for (int j = 0; j < 4; ++j) {
-      const int cid = 4 + j;
-      const int eid = 8 + j;
-      h = (std::max)(h, pdbLookup(pdbs.pair15[static_cast<std::size_t>(j)],
-                                  pairPatternIdx(s, cid, eid)));
-    }
+    // cross15 + pair15 are exactly 0 once F2L is complete (stage order and
+    // is_oll_solved guarantee it), so they contribute nothing and only cost
+    // two PDB lookups per node.  Drop them: OLL heuristic = max(ollC, ollE,
+    // oriC, oriE, oriBoth).  Dropping terms from a max can only lower h, so
+    // admissibility is preserved.
     h = (std::max)(h, pdbLookup(pdbs.ollC, cornerPatternIdx(s, kUIds)));
     h = (std::max)(h, pdbLookup(pdbs.ollE, edgePatternIdx(s, kUIds)));
     h = (std::max)(h, pdbLookup(pdbs.oriC, cornerOriIndex(s.co)));
@@ -943,22 +943,18 @@ int stageHeuristic(StageKind kind, int pairIdx, const Pdbs& pdbs,
                    pdbLookup(pdbs.oriBoth, cornerOriIndex(s.co) * 2048u +
                                                edgeOriIndex(s.eo)));
   } else {
-    h = (std::max)(h, pdbLookup(pdbs.cross15, edgePatternIdx(s, kCrossIds)));
-    for (int j = 0; j < 4; ++j) {
-      const int cid = 4 + j;
-      const int eid = 8 + j;
-      h = (std::max)(h, pdbLookup(pdbs.pair15[static_cast<std::size_t>(j)],
-                                  pairPatternIdx(s, cid, eid)));
-    }
-    h = (std::max)(h, pdbLookup(pdbs.ollC, cornerPatternIdx(s, kUIds)));
-    h = (std::max)(h, pdbLookup(pdbs.ollE, edgePatternIdx(s, kUIds)));
-    h = (std::max)(h, pdbLookup(pdbs.pllC, cornerPatternIdx(s, kUIds)));
-    h = (std::max)(h, pdbLookup(pdbs.pllE, edgePatternIdx(s, kUIds)));
-    h = (std::max)(h, pdbLookup(pdbs.oriC, cornerOriIndex(s.co)));
-    h = (std::max)(h, pdbLookup(pdbs.oriE, edgeOriIndex(s.eo)));
-    h = (std::max)(h,
-                   pdbLookup(pdbs.oriBoth, cornerOriIndex(s.co) * 2048u +
-                                               edgeOriIndex(s.eo)));
+    // PLL allows all 18 moves (including D) and runs only after F2L is
+    // complete. cross15/pair15 (D edges + F2L pairs) are exactly 0 once F2L
+    // is complete (stage order guarantees it), so they contribute nothing
+    // here.  They, and pllC/pllE/oriC/oriE/oriBoth/ollC/ollE, are built with
+    // the 15 non-D moves and are position/orientation indexed, so D moves
+    // (which can move U-layer cubies into the D layer and back) can make them
+    // overestimate the all-18 PLL distance on arbitrary states.  Dropping
+    // terms from a max only lowers h, so admissibility is preserved.  The
+    // remaining term, pllPerm, is rebuilt with all 18 moves (see buildPdbs)
+    // and is an all-18 admissible relaxation: restoring the U-layer cubies to
+    // solved positions is implied by a full PLL solve.  pllPerm dominates
+    // pllC/pllE (restoring corners+edges >= restoring corners alone).
     h = (std::max)(h, pdbLookup(pdbs.pllPerm, pllPermIdx(s)));
   }
   return h;
@@ -1011,6 +1007,10 @@ std::expected<std::vector<int>, SolveError> runIda(
   searcher.setThreadCount(threadCount);
   if (hasDeadline) searcher.setDeadline(deadline);
   searcher.setStopToken(externalToken);
+  // Korf redundant-move pruning (same face + opposite faces, canonical order).
+  // Lossless: preserves optimal move counts, only cuts redundant nodes.
+  const tables::MovePruningTable pruneTable(allowed);
+  searcher.setMovePruning(pruneTable.policy());
   const SearchState root{start, -1, false};
   auto result = searcher.run(root, stageLimit);
   if (result) return result;
@@ -1135,6 +1135,26 @@ std::optional<std::vector<int>> tryPllTable(
 }
 
 }  // namespace
+
+int testStageHeuristic(TestStageKind kind, int pairIndex,
+                       const CubeState& state) {
+  (void)pairIndex;
+  const Pdbs& pdbs = getPdbs();
+  switch (kind) {
+    case TestStageKind::Cross:
+      return pdbLookup(pdbs.cross18, edgePatternIdx(state, kCrossIds));
+    case TestStageKind::F2L_1: {
+      int h = pdbLookup(pdbs.cross18, edgePatternIdx(state, kCrossIds));
+      h = (std::max)(h, pdbLookup(pdbs.pair18[0], pairPatternIdx(state, 4, 8)));
+      return h;
+    }
+    case TestStageKind::Oll:
+      return stageHeuristic(StageKind::Oll, 0, pdbs, state);
+    case TestStageKind::Pll:
+      return stageHeuristic(StageKind::Pll, 0, pdbs, state);
+  }
+  return 0;
+}
 
 // ---------------------------------------------------------------------------
 // Public predicates and move sets.
