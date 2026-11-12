@@ -49,6 +49,23 @@ std::vector<std::string> final_corners_allowed_moves();
 // Allowed tokens for a stage name (see stage_names()).
 std::vector<std::string> allowed_moves_for_stage(const std::string& stage_name);
 
+// Pairing-stage IDA* substep kinds (BrPair=5, Urf=6, UEdges=7, Pairs=8,
+// Final=9, Oll=10). Exposed so tests can drive the heuristic directly.
+enum class StageKind {
+  Squares, Mid1, Mid2, Mid3, Orient,
+  BrPair, Urf, UEdges, Pairs, Final, Oll
+};
+
+// Heuristic = max of the stage's subproblem PDBs (admissible). Exposed for
+// admissibility testing of the pairing-stage heuristic.
+int stageHeuristicValue(StageKind kind, const CubeState& state);
+
+// Korf-style disjoint-group combination for the pairing stage: MAX across
+// groups, SUM within a group only when the structural admissibility gate
+// passes. Exposed so tests can verify the gate falls back to MAX for Heise
+// (all-18-face alphabet) and that it equals stageHeuristicValue.
+int pairingStageHeuristicGroups(StageKind kind, const CubeState& state);
+
 // Goal predicates. Each predicate is checked by solve() after its stage and
 // can be checked externally by tests on the cubie state. The aliases below
 // use alternative historical spellings.

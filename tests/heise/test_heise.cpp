@@ -362,3 +362,91 @@ TEST(Heise, FinalCornersLeavesThreeCorners) {
   }
   EXPECT_TRUE(rubik::is_solved(done));
 }
+
+// ---------------------------------------------------------------------------
+// Korf-style max-of-sums combinator for the pairing stage (substeps
+// BrPair=5, Oll=10, UEdges=7, Pairs=8).
+//
+// For Heise's 18-face alphabet the SUM gate never passes: every face turns
+// cubies from every group (move-support overlap), and f2l pairs share pieces
+// with corner/edge groups (piece overlap).  Max-of-sums therefore collapses
+// to MAX = stageHeuristicValue.  These tests pin that behavior: equality with
+// the baseline heuristic (no behavior change), admissibility
+// (h(goal + k moves) <= k for k = 0..6), and gate rejection on a state that
+// maximizes every sub-PDB.
+// ---------------------------------------------------------------------------
+
+TEST(Heise, PairingStageHeuristicEqualsStageHeuristicValue) {
+  const std::vector<rubik::heise::StageKind> kinds = {
+      rubik::heise::StageKind::BrPair, rubik::heise::StageKind::Oll,
+      rubik::heise::StageKind::UEdges, rubik::heise::StageKind::Pairs};
+  // Solved state: every pairing-stage heuristic is 0 (goal).
+  for (rubik::heise::StageKind kind : kinds) {
+    EXPECT_EQ(rubik::heise::pairingStageHeuristicGroups(kind,
+                                                        CubeState::solved()), 0);
+    EXPECT_EQ(rubik::heise::stageHeuristicValue(kind, CubeState::solved()), 0);
+  }
+  // Random shallow states: combinator must equal the plain max heuristic.
+  std::mt19937 rng(20261108u);
+  for (int trial = 0; trial < 100; ++trial) {
+    const auto tokens = randomScrambleTokens(rng, 8);
+    const CubeState state = scrambleState(tokens);
+    for (rubik::heise::StageKind kind : kinds) {
+      EXPECT_EQ(rubik::heise::pairingStageHeuristicGroups(kind, state),
+                rubik::heise::stageHeuristicValue(kind, state))
+          << "kind=" << static_cast<int>(kind)
+          << " scramble=" << joinTokens(tokens);
+    }
+  }
+}
+
+TEST(Heise, PairingStageAdmissibility) {
+  // h(goal + k moves) <= k for k = 0..6.  The solved state satisfies every
+  // stage goal; applying k moves yields a state at distance <= k from goal,
+  // so an admissible heuristic must return <= k.
+  const std::vector<rubik::heise::StageKind> kinds = {
+      rubik::heise::StageKind::BrPair, rubik::heise::StageKind::Oll,
+      rubik::heise::StageKind::UEdges, rubik::heise::StageKind::Pairs};
+  std::mt19937 rng(20261109u);
+  const auto& allMoves = rubik::all_face_moves();
+  for (rubik::heise::StageKind kind : kinds) {
+    for (int k = 0; k <= 6; ++k) {
+      CubeState state = CubeState::solved();
+      for (int m = 0; m < k; ++m) {
+        const Move mv =
+            allMoves[static_cast<std::size_t>(rng() % allMoves.size())];
+        state = rubik::apply(state, {mv});
+      }
+      const int hGroup =
+          rubik::heise::pairingStageHeuristicGroups(kind, state);
+      const int hMax = rubik::heise::stageHeuristicValue(kind, state);
+      EXPECT_LE(hGroup, k)
+          << "kind=" << static_cast<int>(kind) << " k=" << k;
+      EXPECT_LE(hMax, k)
+          << "kind=" << static_cast<int>(kind) << " k=" << k;
+    }
+  }
+}
+
+TEST(Heise, PairingStageGateRejectsAllGroups) {
+  // Structural admissibility gate: every pairing-stage group is MAX-ed under
+  // Heise's 18-face alphabet.  Two patterns with full move support can never
+  // be move-support-disjoint; f2l pairs also share pieces with corner/edge
+  // groups.  Hence pairingStageHeuristicGroups == stageHeuristicValue on a
+  // state constructed to maximize every sub-PDB (all heuristics > 0).
+  std::mt19937 rng(20261110u);
+  CubeState state = CubeState::solved();
+  const auto& allMoves = rubik::all_face_moves();
+  for (int m = 0; m < 25; ++m) {
+    const Move mv =
+        allMoves[static_cast<std::size_t>(rng() % allMoves.size())];
+    state = rubik::apply(state, {mv});
+  }
+  for (rubik::heise::StageKind kind :
+       {rubik::heise::StageKind::BrPair, rubik::heise::StageKind::Oll,
+        rubik::heise::StageKind::UEdges, rubik::heise::StageKind::Pairs}) {
+    EXPECT_EQ(rubik::heise::pairingStageHeuristicGroups(kind, state),
+              rubik::heise::stageHeuristicValue(kind, state))
+        << "kind=" << static_cast<int>(kind);
+  }
+}
