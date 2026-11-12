@@ -1,6 +1,0 @@
-Export sub-agent — done.
-graph.json: 1,990,383 bytes, 1544 nodes, 3866 links (communities labeled via .graphify_labels.json, 1778 bytes).
-graph.html: 1,551,136 bytes, exists and non-empty. Regenerated via `graphify export html` (18:46). Node count 1544 < 5000, so no Honesty warning required.
-Wiki: SKIPPED (not generated). Reason: corpus is a single C++ codebase (AST-derived code symbols) with 60 code communities; wiki articles would duplicate GRAPH_REPORT.md and graph.html navigation without additional prose value, and add ~60 low-signal markdown files.
-Graph was rebuilt in parallel by another agent during this task (mtime 18:45:50); export used the latest graph.json. No failures.
-No graph rebuild or relabel performed by this sub-agent; writes confined to graphify-out/.
